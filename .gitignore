@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.env
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Node
+node_modules/
+dist/
+.DS_Store
+
+# Streamlit
+.streamlit/
+
+# Misc
+.vscode/
+.idea/
