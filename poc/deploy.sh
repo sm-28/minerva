@@ -29,7 +29,7 @@ git reset --hard origin/$BRANCH
 
 # Activate virtual environment
 echo "🐍 Activating virtual environment..."
-source "$APP_DIR/poc/venv/bin/activate"
+source "$APP_DIR/venv/bin/activate"
 
 echo "📦 Installing dependencies..."
 pip install -r requirements.txt
