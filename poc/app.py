@@ -130,7 +130,7 @@ def check_auth():
             
             # Add a "Force Bypass" button if they are stuck
             st.divider()
-            if st.checkbox("Having trouble logging in? Enter as Guest"):
+            if st.checkbox("Any trouble in login? Enter as a Guest"):
                 if st.button("Enter as Guest"):
                     st.session_state["is_logged_in"] = True
                     st.session_state["user_id"] = "guest-user"
