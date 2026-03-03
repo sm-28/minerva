@@ -27,8 +27,6 @@ echo "📥 Fetching latest code..."
 git fetch origin
 git reset --hard origin/$BRANCH
 
-cd "$APP_DIR/poc"
-
 # Activate virtual environment
 echo "🐍 Activating virtual environment..."
 source "$APP_DIR/poc/venv/bin/activate"
