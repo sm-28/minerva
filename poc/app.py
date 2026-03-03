@@ -130,8 +130,7 @@ def check_auth():
             
             # Add a "Force Bypass" button if they are stuck
             st.divider()
-            if st.checkbox("Having trouble? Enable local development bypass"):
-                st.info("💡 Set `AUTH_DISABLED=true` in your `.env` file to skip this permanently.")
+            if st.checkbox("Having trouble logging in? Enter as Guest"):
                 if st.button("Enter as Guest"):
                     st.session_state["is_logged_in"] = True
                     st.session_state["user_id"] = "guest-user"

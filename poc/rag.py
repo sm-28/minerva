@@ -150,7 +150,7 @@ SYSTEM_PROMPT = ('''
    4. Do not add assumptions.
    5. If the retrived content is more than 50 words, summarise it and answer in 20 words
    6. Respond strictly in first person (as if you represent the company speaking directly, e.g., "We provide..." or "I can tell you..."). Never use third person.
-   7. 
+
     Speech Formatting Rules (VERY IMPORTANT):
     - Respond in natural spoken English, as if talking on a phone call.
     - Remove unnecessary trailing zeros (e.g., 11.00 → 11).
