@@ -4,6 +4,7 @@ import sys
 import time
 import re
 import logging
+import hashlib
 
 import streamlit as st
 
@@ -21,11 +22,62 @@ from rag import (
     load_vector_store,
     retrieve,
     build_rag_prompt,
-    SYSTEM_PROMPT,
     UNKNOWN_RESPONSE,
 )
 
+# ---------------------------------------------------------------------------
+# Prompts & Constants
+# ---------------------------------------------------------------------------
+
+INDUSTRY_CLASSIFIER_SYSTEM = """You are an industry classifier. The available industries are: {industries}.
+Given a user query, output ONLY the exact industry name from the list or 'UNKNOWN'. 
+Examples:
+- "Can you help with my credit card?" -> Fintech
+- "How do I fix my warehouse roof?" -> Warehouses
+- "Tell me about mobile banking" -> Fintech
+- "Cold roofing solutions" -> Warehouses
+
+Identify the industry based on the core topic of the user's question."""
+
+SCOPE_CLASSIFIER_SYSTEM = """You are a scope classifier for the {industry} industry. 
+Available Topics: {topics}.
+User Query: {query}
+
+Instructions:
+1. If the query is about the industry, its services, the company's background, history, experience, or track record, output 'RELATED'.
+2. If the user is expressing interest in the next steps, asking to book an appointment, requesting a consultation, or asking for contact details/pricing, output 'RELATED'.
+3. Even if it's a short "yes", "sure", "book it" following a suggestion, it's 'RELATED'.
+4. If it's a greeting (hi, hello) or completely unrelated (weather, jokes, general knowledge), output 'GENERAL'.
+5. Output ONLY the word 'RELATED' or 'GENERAL' with no punctuation.
+6. When in doubt, prefer 'RELATED'.
+"""
+
+TOPIC_CLASSIFIER_SYSTEM = "You are a topic classifier. Given a list of topics ({topics}) for {industry}, determine which one the user is asking about. Output ONLY the exact topic name or 'OUT_OF_SCOPE'. If it's a broad industry question, pick the most relevant topic."
+
+# New RAG System Prompt
+SYSTEM_PROMPT = """
+You are representative of the company. 
+Conversation Summary: {summary}
+
+INSTRUCTIONS:
+1. Answer using the provided context and the summary.
+2. Do NOT repeat your initial greeting or the list of industries you specialize in.
+3. If the user is responding with a confirmation, affirmation (e.g. "Yes", "Sure"), or following up on a task (e.g. scheduling, booking), use the Conversation Summary to provide a natural response.
+3. If the information is missing from both the context and the summary, say: "I do not have that information in my knowledge base."
+4. Respond in first person, concisely (approx 20 words).
+5. Usually end with a question to keep things moving, UNLESS the goal is fully achieved.
+6. CRITICAL CLOSURE RULE: Trigger completion ONLY when a specific commitment is FINALIZED. 
+   - ACHIEVED: "Yes, Friday at 10 AM is perfect" or "My number is 555-0123".
+   - NOT ACHIEVED: "Yes please", "Book a time", "I want a consultation", "Tell me more".
+7. If the user expresses interest (e.g., "Yes", "Book it") but hasn't picked a time/date yet, you MUST ask: "What day or time would work best for you?" 
+8. Do NOT append "[COMPLETE]" until the user has actually picked a slot or provided contact info.
+9. To complete: thank the user warmly, confirm the final details (e.g., "Great, I've noted your appointment for Friday at 10 AM. Talk soon!"), and append exactly "[COMPLETE]" at the end.
+10. Ensure your response is aligned with this steering instruction: {goal}.
+"""
+
 log = get_logger("app")
+logging.basicConfig(level=logging.INFO)
+logging.getLogger().setLevel(logging.INFO)
 
 # Enable debug logging for authlib to troubleshoot handshake failures
 logging.getLogger("authlib").setLevel(logging.DEBUG)
@@ -255,18 +307,71 @@ st.markdown("""
 # ---------------------------------------------------------------------------
 # Session state initialisation
 # ---------------------------------------------------------------------------
+import json
+from pathlib import Path
+
+BASE_DIR   = Path(__file__).resolve().parent
+CLIENT_CONFIG_PATH = BASE_DIR / "client_config.json"
+
+@st.cache_resource
+def load_clients():
+    with open(CLIENT_CONFIG_PATH) as f:
+        return json.load(f)
+
+CLIENTS = load_clients()
+
+def get_available_industries():
+    return list(set([c["Industry"] for c in CLIENTS]))
+
+@st.cache_resource
+def get_client_topics():
+    sarvam = SarvamClient()
+    topics = {}
+    for client in CLIENTS:
+        index_name = client["index"]
+        industry = client["Industry"]
+        try:
+            # Retrieve chunks to find representative topics
+            chunks = retrieve("Get the highlights present in this knowledge base", index_name, top_k=5)
+            if not chunks:
+                topics[index_name] = []
+                continue
+            
+            context = "\n".join([c["text"][:4000] for c in chunks])
+            log.info(f"Flow: Context for {index_name}: {context}")
+            prompt = f"Based on these following contexts {context} \n from a {industry} company, list maximum of 5 specific customer enquiry topics strictly based on the provided context. Output only the topics (3 words max), one per line, no numbering."
+            response = sarvam.chat_completion("You are a helpful assistant.", prompt, temperature=0.0, max_tokens=100)
+            
+            derived = [t.strip("- ").strip() for t in response.split("\n") if t.strip()]
+            topics[index_name] = derived
+            log.info(f"Flow: Derived topics for {index_name}")
+        except Exception as e:
+            log.error(f"Failed to derive topics for {index_name}: {e}")
+            topics[index_name] = []
+    return topics
 
 def _init_state():
     defaults = {
         "user_id":           None,
         "session_id":        None,
         "unknown_questions": [],
-        "conversation":      [],   # list of {"role": "user"|"assistant", "content": str, "is_unknown": bool}
-        "sarvam":            None,
+        "conversation":      [],   # list of {"role": "user"|"assistant", "content": str}
+        "sarvam":            SarvamClient(),
         "vector_store_ok":   False,
         "session_ended":     False,
         "debug_mode":        False,
-        "latency_log":       [],   # list of dicts from LatencyTracker.all()
+        "latency_log":       [],
+        "has_greeted":       False,
+        "selected_client":   None, # dict from CLIENTS
+        "selected_topic":    None,
+        "turn_count":        0,
+        "derived_topics":    get_client_topics(),
+        "last_audio_processed": None, # hash of last recording handled
+        "audio_played_keys": set(),  # track which message audios have been played
+        "history_summary":   "",     # rolling summary of the conversation
+        "final_summary":     None,   # final wrap-up summary
+        "pending_completion": False, # Flag to trigger end after processing current turn
+        "spoken_language":   "Auto-Detect",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -312,6 +417,20 @@ def render_sidebar():
             st.rerun()
                 
         st.divider()
+        st.markdown("## 📊 Session Stats")
+        client_name = st.session_state["selected_client"]["Client"] if st.session_state["selected_client"] else "None"
+        st.markdown(f"**Client:** {client_name}")
+        if st.session_state["selected_client"]:
+            topics = st.session_state["derived_topics"].get(st.session_state["selected_client"]["index"], [])
+            if topics:
+                st.markdown("**Available Topics:**")
+                for t in topics:
+                    st.markdown(f"- {t}")
+        
+        st.markdown(f"**Topic:** {st.session_state['selected_topic'] or 'None'}")
+        st.markdown(f"**Turns:** {st.session_state['turn_count']}")
+        
+        st.divider()
         st.markdown("## 🎙️ Minerva Settings")
 
         # Debug mode toggle
@@ -319,6 +438,14 @@ def render_sidebar():
             "Debug Mode",
             value=st.session_state["debug_mode"],
             help="Show similarity scores, retrieved chunks, and token counts",
+        )
+
+        st.markdown("### 🗣️ Language")
+        st.session_state["spoken_language"] = st.selectbox(
+            "Select language you are speaking in:",
+            options=["Auto-Detect", "English", "Hindi", "Bengali", "Tamil", "Telugu", "Kannada", "Malayalam", "Marathi", "Gujarati", "Punjabi"],
+            index=0,
+            help="Locking the language can improve accuracy if auto-detect is failing."
         )
         st.divider()
 
@@ -397,23 +524,33 @@ def render_debug_panel(result: dict):
 
 
 def render_end_session_summary():
-    unknowns = st.session_state["unknown_questions"]
-    if not unknowns:
-        st.success("✅ No unknown questions were recorded this session. Great coverage!")
-        return
+    # 1. Show the Business Summary/Outcome if available
+    summary = st.session_state.get("final_summary")
+    if summary:
+        st.markdown(
+            f'<div class="summary-box" style="border-left: 4px solid #10b981; background: rgba(16, 185, 129, 0.05);">'
+            f'<h3 style="color:#10b981">✨ Goal Achieved</h3>'
+            f'<div style="padding:1rem;border-radius:8px;margin-bottom:1rem; border: 1px solid rgba(16,185,129,0.2)">'
+            f'{summary}'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
-    items_html = "".join(f"<li>{q}</li>" for q in unknowns)
-    st.markdown(
-        f'<div class="summary-box">'
-        f'<h3>📋 Unknown Questions Summary</h3>'
-        f'<p>The following questions could not be answered from the provided documents:</p>'
-        f'<ol>{items_html}</ol>'
-        f'<hr style="border-color:#6a1a1a;margin:1rem 0">'
-        f'<p style="color:#ffa0a0;font-size:0.9rem">📞 <strong>Simulate callback:</strong> '
-        f'A follow-up will be arranged to address these {len(unknowns)} questions.</p>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+    # 2. Show Unknown Questions
+    unknowns = st.session_state["unknown_questions"]
+    if unknowns:
+        items_html = "".join(f"<li>{q}</li>" for q in unknowns)
+        st.markdown(
+            f'<div class="summary-box" style="border-left: 4px solid #f59e0b; background: rgba(245, 158, 11, 0.05);">'
+            f'<h3 style="color:#f59e0b">📋 Pending Inquiries</h3>'
+            f'<p>Our team will follow up on these details:</p>'
+            f'<ol>{items_html}</ol>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.success("✅ All your questions were addressed during this session!")
 
 
 # ---------------------------------------------------------------------------
@@ -434,46 +571,90 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # Pre-load vector store (shows error if not ingested)
-    try:
-        _ensure_vector_store()
-    except FileNotFoundError as e:
-        st.error(str(e))
-        st.stop()
+    # Pre-load vector stores
+    if not st.session_state["vector_store_ok"]:
+        for client in CLIENTS:
+            try:
+                load_vector_store(client["index"])
+            except Exception as e:
+                st.warning(f"Could not load index for {client['Client']}: {e}")
+        st.session_state["vector_store_ok"] = True
 
-    # Early-exit if session ended
-    if st.session_state["session_ended"]:
-        st.markdown("---")
-        st.markdown("## 🏁 Session Ended")
-        render_end_session_summary()
-        if st.button("🔄 Start New Session"):
-            for key in ["unknown_questions", "conversation", "latency_log", "session_ended"]:
-                st.session_state[key] = [] if key != "session_ended" else False
-            st.rerun()
-        return
+    # Welcome greeting
+    if not st.session_state.get("has_greeted", False):
+        sarvam = _get_sarvam()
+        industries_list = get_available_industries()
+        industries_str = ", ".join(industries_list)
+        greeting_text = f"Welcome to Minerva. I am your intelligent voice assistant. I specialize in {industries_str}. How can I help you today?"
+        st.session_state["has_greeted"] = True
+        greeting_audio = None
+        try:
+            with st.spinner("Initializing voice..."):
+                greeting_audio = sarvam.text_to_speech(greeting_text)
+        except Exception as e:
+            log.error(f"Greeting TTS failed: {e}")
+        
+        st.session_state["conversation"].append({
+            "role": "assistant",
+            "content": greeting_text,
+            "audio_data": greeting_audio,
+        })
+        st.rerun()
+
+    # Determine if we should show the summary
+    session_ended = st.session_state.get("session_ended", False)
+    pending_completion = st.session_state.get("pending_completion", False)
+    
+    # We only show the summary if session_ended is True and we AREN'T currently processing a final message
+    show_summary = session_ended and not pending_completion
 
     # Conversation history (using chat_message for better aesthetic)
-    for msg in st.session_state["conversation"]:
+    for i, msg in enumerate(st.session_state["conversation"]):
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("is_unknown"):
                 st.caption("⚠️ Grounding check: Unknown in provided context.")
+            
+            # Autoplay last assistant message audio if not played yet
+            if msg["role"] == "assistant" and "audio_data" in msg:
+                audio_key = f"audio_msg_{i}"
+                if audio_key not in st.session_state["audio_played_keys"]:
+                    st.audio(msg["audio_data"], format="audio/wav", autoplay=True)
+                    st.session_state["audio_played_keys"].add(audio_key)
+                else:
+                    # Render regular audio player without autoplay for history
+                    st.audio(msg["audio_data"], format="audio/wav")
+
+    if show_summary:
+        st.markdown("---")
+        st.markdown("## 🏁 Session Final Results")
+        render_end_session_summary()
+        if st.button("🔄 Start New Session", use_container_width=True):
+            for key in ["unknown_questions", "conversation", "latency_log", "session_ended", "has_greeted", "audio_played_keys"]:
+                if key == "session_ended" or key == "has_greeted":
+                    st.session_state[key] = False
+                elif key == "audio_played_keys":
+                    st.session_state[key] = set()
+                else:
+                    st.session_state[key] = []
+            st.rerun()
+        return
 
     # Mic input
     st.markdown("---")
-    st.markdown("### 🎤 Speak to the Bot")
+    st.markdown("### 🎤 Talk with Minerva")
     st.caption("Click the microphone button, ask your question, then click again to stop.")
 
     try:
         from audio_recorder_streamlit import audio_recorder
         audio_bytes = audio_recorder(
-            text="",
+            text="Click to Record",
             recording_color="#e74c3c",
             neutral_color="#5b7fde",
             icon_name="microphone",
             icon_size="3x",
             pause_threshold=2.0,    # auto-stop after 2s of silence
-            sample_rate=16000,
+            sample_rate=44100,
         )
     except ImportError:
         st.warning("audio-recorder-streamlit is not installed. Using file uploader as fallback.")
@@ -481,129 +662,262 @@ def main():
         audio_bytes = uploaded.read() if uploaded else None
 
     # Process audio
-    if audio_bytes and len(audio_bytes) > 2000:  # skip spurious tiny captures
-        tracker = LatencyTracker()
-        sarvam  = _get_sarvam()
+    if audio_bytes and len(audio_bytes) > 2000:
+        audio_hash = hashlib.md5(audio_bytes).hexdigest()
+        if st.session_state["last_audio_processed"] != audio_hash:
+            # Set this immediately to prevent concurrent re-entry
+            st.session_state["last_audio_processed"] = audio_hash
+            
+            tracker = LatencyTracker()
+            sarvam  = _get_sarvam()
 
-        # Step 1: STT (Transcribe user audio)
-        with st.status("Listening...", expanded=False) as status:
-            with tracker.measure("STT"):
+            # Step 1: STT
+            lang_map = {
+                "Auto-Detect": "unknown",
+                "English": "en-IN",
+                "Hindi": "hi-IN",
+                "Bengali": "bn-IN",
+                "Tamil": "ta-IN",
+                "Telugu": "te-IN",
+                "Kannada": "kn-IN",
+                "Malayalam": "ml-IN",
+                "Marathi": "mr-IN",
+                "Gujarati": "gu-IN",
+                "Punjabi": "pa-IN"
+            }
+            requested_lang = lang_map.get(st.session_state["spoken_language"], "unknown")
+            
+            with st.status("Listening...", expanded=False) as status:
                 try:
-                    transcript, det_lang = sarvam.transcribe(audio_bytes, language_code="unknown")
-                    log.info("Detected language: %s", det_lang)
+                    with tracker.measure("STT"):
+                        transcript, det_lang = sarvam.transcribe(audio_bytes, language_code=requested_lang)
                 except Exception as e:
-                    st.error(f"STT Error: {e}")
+                    log.error(f"Flow: STT failed: {e}")
+                    status.update(label="Speech detection failed. Please try again.", state="error")
+                    st.session_state["last_audio_processed"] = None # Reset to allow retry
                     st.stop()
-            
-            if not transcript:
-                status.update(label="No speech detected.", state="error")
-                st.stop()
-            
-            status.update(label="Transcribed!", state="complete")
+                if not transcript:
+                    log.info("Flow: STT returned empty transcript")
+                    status.update(label="No speech detected.", state="error")
+                    st.stop()
+                status.update(label="Transcribed!", state="complete")
         
-        # Display user message immediately
-        with st.chat_message("user"):
-            st.markdown(transcript)
-        
-        st.session_state["conversation"].append({
-            "role": "user", "content": transcript
-        })
-        # Step 1.1: Translate the user query from the detected language to english. If it is english, skip this step
-        if str(det_lang).strip().lower() != "en-in":
-            with st.status("Translating...", expanded=False) as status:
+            log.info(f"TRANSCRIPT: {transcript} (Language: {det_lang})")
+            with st.chat_message("user"):
+                st.markdown(transcript)
+            st.session_state["conversation"].append({"role": "user", "content": transcript})
+            
+            # Step 1.1: Translate to English for processing
+            if str(det_lang).strip().lower() != "en-in":
+                log.info(f"Flow: Translating from {det_lang} to English")
                 with tracker.measure("Translate"):
-                    try:
-                        transcript = sarvam.translate(transcript, det_lang, "en-IN")
-                    except Exception as e:
-                        st.error(f"Translate Error: {e}")
-                        st.stop()
-            status.update(label="Translated!", state="complete")
+                    transcript = sarvam.translate(transcript, det_lang, "en-IN")
+            else:
+                log.info("Flow: Transcript already in English")
 
-        # Step 2: Retrieval (RAG)
-        with st.status("Searching documents...", expanded=False) as status:
-            with tracker.measure("Retrieval"):
-                chunks = retrieve(transcript, top_k=3)
-            status.update(label="Context retrieved.", state="complete")
+            response = ""
+            is_unknown = False
 
-        is_unknown = (not chunks) or chunks[0]["is_unknown"]
-
-        # Step 3: LLM + Step 4: Translation + Step 5: TTS
-        with st.chat_message("assistant"):
-            response_placeholder = st.empty()
-            audio_placeholder = st.empty()
-            debug_placeholder = st.empty()
+            # Step 2: Industry Detection (if needed)
+            if not st.session_state["selected_client"]:
+                with st.status("Identifying industry...", expanded=False) as status:
+                    with tracker.measure("Classification (Industry)"):
+                        industries = ", ".join(get_available_industries())
+                        sys_prompt = INDUSTRY_CLASSIFIER_SYSTEM.format(industries=industries)
+                        user_prompt = f"User Query: {transcript}"
+                        choice = sarvam.chat_completion(sys_prompt, user_prompt, temperature=0.0, max_tokens=20)
+                        
+                        # Fuzzy match industry
+                        match = None
+                        low_choice = choice.lower()
+                        for c in CLIENTS:
+                            ind_name = c["Industry"].lower()
+                            if ind_name in low_choice or low_choice in ind_name:
+                                match = c
+                                break
+                        
+                        if match:
+                            st.session_state["selected_client"] = match
+                            log.info(f"Flow: Industry identified as '{match['Industry']}'")
+                            status.update(label=f"Industry: {match['Industry']}", state="complete")
+                            
+                            if len(transcript.split()) <= 2:
+                                log.info("Flow: Short query - offering greeting and topics")
+                                topics_list = st.session_state["derived_topics"].get(match["index"], [])
+                                spoken_topics = ", ".join(topics_list[:3]) + (" and others" if len(topics_list) > 3 else "")
+                                response = f"I see you're interested in {match['Industry']}. I can help you with {spoken_topics}. What would you like to know?"
+                                display_response = f"I see you're interested in {match['Industry']}. I can help you with: {', '.join(topics_list)}. What would you like to know?"
+                                st.session_state["pending_display_response"] = display_response
+                            else:
+                                log.info("Flow: Long query detected - proceeding to RAG immediately")
+                        else:
+                            log.info("Flow: Industry match failed")
+                            response = f"I am sorry, I currently only specialize in {industries}. Please let me know which of these you are interested in."
+                            status.update(label="Unknown Industry", state="error")
+            else:
+                log.info("Flow: Industry already selected")
             
-            if is_unknown:
-                response = UNKNOWN_RESPONSE
-                llm_tokens = 0
-                st.session_state["unknown_questions"].append(transcript)
+            if st.session_state["selected_client"] and not response:
+                client = st.session_state["selected_client"]
+                topics_list = st.session_state["derived_topics"].get(client["index"], [])
+                topics_str = ", ".join(topics_list)
                 
-                # Translate fallback if needed
+                with st.status("Checking scope...", expanded=False) as status:
+                    # Scope Detection
+                    with tracker.measure("Classification (Scope)"):
+                        scope_sys = SCOPE_CLASSIFIER_SYSTEM.format(
+                            industry=client['Industry'],
+                            topics=topics_str,
+                            query=transcript
+                        )
+                        scope_choice = sarvam.chat_completion(scope_sys, f"User Query: {transcript}", temperature=0.0, max_tokens=10)
+                    if "RELATED" in scope_choice.upper():
+                        log.info(f"Flow: Query is within scope for '{client['Industry']}'")
+                        st.session_state["turn_count"] += 1
+                        
+                        # Topic Detection (Advisory only)
+                        with tracker.measure("Classification (Topic)"):
+                            topics = ", ".join(st.session_state["derived_topics"].get(client["index"], []))
+                            topic_sys = TOPIC_CLASSIFIER_SYSTEM.format(industry=client['Industry'], topics=topics)
+                            topic_user = f"Topics: {topics}\nUser Query: {transcript}"
+                            topic_choice = sarvam.chat_completion(topic_sys, topic_user, temperature=0.0, max_tokens=30)
+                        
+                        # Even if topic matches OUT_OF_SCOPE, we proceed with RAG if industry matched
+                        if topic_choice.upper() != "OUT_OF_SCOPE":
+                            log.info(f"Flow: Topic identified as '{topic_choice}'")
+                            st.session_state["selected_topic"] = topic_choice
+                            status.update(label=f"Topic: {topic_choice}", state="complete")
+                        else:
+                            log.info("Flow: Topic classifier returned OUT_OF_SCOPE but proceeding with RAG")
+                            status.update(label=f"Industry query: {client['Industry']}", state="complete")
+                        
+                        # Step 4: RAG
+                        with tracker.measure("Retrieval"):
+                            chunks = retrieve(transcript, client["index"], top_k=3)
+                        
+                        # Decide if we should proceed to LLM
+                        # We proceed if: 
+                        # 1. We found some chunks with decent scores
+                        # 2. It's a conversational turn (short or refers to scheduling/next steps)
+                        scheduling_keywords = ["visit", "call", "appointment", "friday", "monday", "tuesday", "wednesday", "thursday", "saturday", "sunday", "morning", "afternoon", "evening", "time", "date", "schedule"]
+                        is_likely_continuation = len(transcript.split()) <= 8 and (
+                            any(word in transcript.lower() for word in ["yes", "yeah", "ok", "sure", "elaborate", "tell", "explain", "more", "details"]) or
+                            any(word in transcript.lower() for word in scheduling_keywords)
+                        )
+                        
+                        # If we are deep in the conversation (turn 3+), we trust the scope classifier and history more
+                        is_goal_steering_phase = st.session_state["turn_count"] >= 3
+                        
+                        if (chunks and chunks[0]["score"] > 0.15) or is_likely_continuation or is_goal_steering_phase:
+                            log.info(f"Flow: Proceeding to LLM. Chunks: {len(chunks)}, Continuation: {is_likely_continuation}, GoalPhase: {is_goal_steering_phase}")
+                            with tracker.measure("LLM"):
+                                # Use turn count and summary
+                                goal_text = client["Goal"]
+                                if st.session_state["turn_count"] >= 5:
+                                    goal_steer = f"STRONG PUSH: {goal_text}. Lead the user to complete this now."
+                                elif st.session_state["turn_count"] >= 1:
+                                    goal_steer = f"Nudge towards: {goal_text}"
+                                else:
+                                    goal_steer = "None"
+
+                                curr_summary = st.session_state.get("history_summary", "")
+                                if not curr_summary:
+                                    conv = st.session_state["conversation"]
+                                    start_idx = 1 if len(conv) > 1 and conv[0]["role"] == "assistant" else 0
+                                    recent_msgs = [f"{m['role']}: {m['content']}" for m in conv[start_idx:][-4:]]
+                                    curr_summary = "Previous turns: " + " | ".join(recent_msgs)
+
+                                sys_msg = SYSTEM_PROMPT.format(summary=curr_summary, goal=goal_steer)
+                                user_msg = build_rag_prompt(chunks, transcript)
+                                response = sarvam.chat_completion(sys_msg, user_msg, temperature=0.3)
+                                
+                                # Check for completion signal
+                                if "[COMPLETE]" in response:
+                                    response = response.replace("[COMPLETE]", "").strip()
+                                    # Set PENDING completion so we process THIS turn's audio first
+                                    st.session_state["pending_completion"] = True
+                                    
+                                    # Generate final business summary
+                                    log.info("Flow: Generating final session summary")
+                                    with tracker.measure("Summarize"):
+                                        full_history = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state["conversation"]])
+                                        sum_prompt = f"Summarize this customer conversation into 3 bullet points: Main interest, Key details provided, and Business Outcome (e.g. appointment booked for Friday). History:\n{full_history}"
+                                        st.session_state["final_summary"] = sarvam.chat_completion("You are a business summarizer.", sum_prompt)
+                        else:
+                            log.info("Flow: RAG found no relevant information and not a conversational turn")
+                            is_unknown = True
+                            response = "I got your topic of interest, but I do not have specific information about it in my knowledge base. I have logged this and can arrange a follow-up."
+                            st.session_state["unknown_questions"].append(transcript)
+                    else:
+                        log.info("Flow: Scope classifier returned GENERAL/OFF-TOPIC")
+                        response = f"I am sorry, I can only assist with inquiries related to {client['Industry']}. Can I help you with any more questions on this topic?"
+                        status.update(label="Out of Industry Scope", state="error")
+
+            # Step 5: Output (TTS)
+            if response:
+                # Use display version if we saved one
+                ui_text = st.session_state.pop("pending_display_response", response)
+                
+                # Translate back if needed
                 if str(det_lang).strip().lower() != "en-in":
+                    log.info(f"Flow: Translating response back to {det_lang}")
                     with tracker.measure("Translate"):
+                        ui_text = sarvam.translate(ui_text, "en-IN", det_lang)
                         response = sarvam.translate(response, "en-IN", det_lang)
                 
-                response_placeholder.markdown(response)
+                audio_data = None
+                try:
+                    with tracker.measure("TTS"):
+                        audio_data = sarvam.text_to_speech(response, det_lang)
+                except Exception as e:
+                    log.error(f"Flow: TTS failed, proceeding with text only. Error: {e}")
                 
-                # Synthesize and play
-                with tracker.measure("TTS"):
-                    audio_data = sarvam.text_to_speech(response, det_lang)
-                audio_placeholder.audio(audio_data, format="audio/wav", autoplay=True)
-                
-            else:
-                user_prompt = build_rag_prompt(chunks, transcript)
-                
-                # Generate base response (LLM)
-                with tracker.measure("LLM"):
-                    try:
-                        response_en = sarvam.chat_completion(SYSTEM_PROMPT, user_prompt)
-                    except Exception as e:
-                        st.error(f"LLM Error: {e}")
-                        st.stop()
-                
-                # Translate to user's language if required
-                if str(det_lang).strip().lower() != "en-in":
-                    with tracker.measure("Translate"):
-                        response = sarvam.translate(response_en, "en-IN", det_lang)
-                else:
-                    response = response_en
-                
-                # Split and play progressively
-                response_placeholder.markdown(response)
-                llm_tokens = len(response_en.split())
+                # Store in history WITH audio (optional) for replay on rerun
+                msg_entry = {
+                    "role": "assistant", 
+                    "content": ui_text, 
+                    "is_unknown": is_unknown
+                }
+                if audio_data:
+                    msg_entry["audio_data"] = audio_data
+                st.session_state["conversation"].append(msg_entry)
 
-                # Progressive TTS: synthesizing the whole thing but showing markers
-                # Actually, for "play as it arrives", we synthesize sentences
-                sentences = split_sentences(response)
-                all_audio = []
+                # Finalize session if pending
+                if st.session_state.get("pending_completion"):
+                    st.session_state["session_ended"] = True
+                    st.session_state["pending_completion"] = False
                 
-                # Note: Streamlit's st.audio replaces previous audio. 
-                # To play *sequence* seamlessly, we'd need HTML/JS.
-                # For this POC, we'll synthesize segments and concatenate or play the whole thing.
-                # Speed hack: synthesize first two sentences together for faster playback
-                with tracker.measure("TTS"):
-                    audio_data = sarvam.text_to_speech(response, det_lang)
+                # Turn Management: Summarize every 3 turns to prevent overflow
+                if st.session_state["turn_count"] % 3 == 0 and st.session_state["turn_count"] > 0:
+                    log.info("Flow: Summarizing history to prevent memory overflow")
+                    prev_sum = st.session_state.get("history_summary", "")
+                    hist_str = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state["conversation"][-6:]])
+                    
+                    if prev_sum:
+                        sum_prompt = f"Current Summary: {prev_sum}\n\nNew messages:\n{hist_str}\n\nUpdate the summary to include key info from new messages. Keep it to 2-3 sentences."
+                    else:
+                        sum_prompt = f"Summarize this conversation concisely in 2 sentences:\n{hist_str}"
+                        
+                    new_summary = sarvam.chat_completion("You are a expert summarizer.", sum_prompt, max_tokens=150)
+                    st.session_state["history_summary"] = new_summary
+                    
+                    # Optional: Prune old messages if needed, but keeping current for UI display
+                    # If UI becomes slow, we could clear conversation and only show summary.
                 
-                audio_placeholder.audio(audio_data, format="audio/wav", autoplay=True)
+                # Mark turn limit steering (handled above in goal_steer logic)
+                if st.session_state["turn_count"] >= 3:
+                    log.info("Flow: Goal steering active")
+                
+                # Render latency before rerun
+                st.session_state["latency_log"].append(tracker.all())
 
-            # Log to session
-            st.session_state["conversation"].append({
-                "role": "assistant", 
-                "content": response, 
-                "is_unknown": is_unknown
-            })
-            st.session_state["latency_log"].append(tracker.all())
+                # Force rerun to update UI (Sidebar AND Chat History with new audio)
+                log.info("Flow: Rerunning to update UI")
+                st.rerun()
 
-            # Final metrics
-            render_latency_panel(tracker.all())
-            
-            if st.session_state["debug_mode"]:
-                with debug_placeholder:
-                    render_debug_panel({
-                        "chunks": chunks,
-                        "is_unknown": is_unknown,
-                        "llm_tokens": llm_tokens
-                    })
+    # Show latest latency log
+    if st.session_state["latency_log"]:
+        render_latency_panel(st.session_state["latency_log"][-1])
 
     # End Conversation button
     st.markdown("---")

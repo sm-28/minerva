@@ -22,7 +22,7 @@ logger = get_logger("sarvam_adapter")
 # Constants — easy to change without touching call sites
 # ---------------------------------------------------------------------------
 
-STT_MODEL    = "saaras:v3"          # Saaras v3 for batch STT
+STT_MODEL    = "saaras:v3"          # Saaras v3 for high-performance STT
 STT_MODE     = "transcribe"         # transcribe | translate | verbatim
 CHAT_MODEL   = "sarvam-m"           # Sarvam multilingual LLM
 TTS_MODEL    = "bulbul:v2"          # Reverted due to v3 API 500 errors
@@ -52,13 +52,12 @@ class SarvamClient:
                 "Export it before running the app."
             )
         self._client = SarvamAI(api_subscription_key=api_key)
-        logger.info("SarvamClient initialised OK")
 
     # ------------------------------------------------------------------
     # 1. Speech-to-Text
     # ------------------------------------------------------------------
 
-    def transcribe(self, audio_bytes: bytes, language_code: str = "en-IN") -> str:
+    def transcribe(self, audio_bytes: bytes, language_code: str = "en-IN") -> tuple[str, str]:
         """
         Convert raw audio bytes (WAV format) to a transcript string.
 
@@ -90,7 +89,6 @@ class SarvamClient:
             else:
                 detected_language_code = str(detected_language_code).strip()
             
-            logger.info("STT result: %r", transcript[:120])
             return transcript.strip(), detected_language_code
         except Exception as exc:
             logger.error("STT failed: %s", exc)
@@ -100,19 +98,18 @@ class SarvamClient:
     # 2. Chat Completion (RAG answer generation)
     # ------------------------------------------------------------------
 
-    def chat_completion(self, system_prompt: str, user_prompt: str) -> str:
+    def chat_completion(self, system_prompt: str, user_prompt: str, temperature: float = 0.0, max_tokens: int = 500) -> str:
         """
         Generate a grounded answer using Sarvam LLM.
 
         Args:
             system_prompt: Instruction / persona for the model.
             user_prompt:   The user query (with injected context).
+            temperature:   Sampling temperature (0 for deterministic).
+            max_tokens:    limit the response length.
 
         Returns:
             The model's text response.
-
-        Raises:
-            RuntimeError: If the API call fails.
         """
         logger.debug("Chat: prompt length=%d chars", len(user_prompt))
         try:
@@ -121,9 +118,10 @@ class SarvamClient:
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": user_prompt},
                 ],
+                temperature=temperature,
+                max_tokens=max_tokens
             )
             answer = response.choices[0].message.content
-            logger.info("Chat response tokens: %s", getattr(response.usage, "completion_tokens", "?"))
             return answer.strip()
         except Exception as exc:
             logger.error("Chat completion failed: %s", exc)
@@ -157,14 +155,13 @@ class SarvamClient:
             response = self._client.text_to_speech.convert(
                 text=text,
                 target_language_code=language_code,
-                pace=1.1,
+                pace=0.9,
                 speaker=TTS_SPEAKER,
                 model=TTS_MODEL,
             )
             # SDK returns TextToSpeechResponse with audios: List[str] (base64-encoded WAV)
             audio_b64 = response.audios[0]
             audio_bytes = base64.b64decode(audio_b64)
-            logger.info("TTS: received %d bytes of audio", len(audio_bytes))
             return audio_bytes
         except Exception as exc:
             logger.error("TTS failed: %s", exc)
@@ -201,7 +198,6 @@ class SarvamClient:
             # The SDK returns TranslationResponse with 'translated_text' or similar
             # Based on user's code, we check for 'translated_text'
             translated_text = response.translated_text if hasattr(response, "translated_text") else str(response)
-            logger.info("Translate result: %r", translated_text[:120])
             return translated_text.strip()
         except Exception as exc:
             logger.error("Translate failed: %s", exc)

@@ -1,0 +1,14 @@
+[
+    {
+        "Client": "Kira Finance",
+        "Industry": "Fintech",
+        "Goal": "Selling products",
+        "index": "kira_finance"
+    },
+    {
+        "Client": "Thermilate Warehouses",
+        "Industry": "Warehouses",
+        "Goal": "Appointment Booking",
+        "index": "thermilate_warehouse"
+    }
+]
