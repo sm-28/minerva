@@ -27,19 +27,24 @@ echo "📥 Fetching latest code..."
 git fetch origin
 git reset --hard origin/$BRANCH
 
+cd "$APP_DIR/poc"
+
+# Activate virtual environment
+echo "🐍 Activating virtual environment..."
+source "$APP_DIR/poc/venv/bin/activate"
+
 echo "📦 Installing dependencies..."
-pip3 install -r requirements.txt
+pip install -r requirements.txt
 
 echo "🛑 Stopping existing Streamlit..."
 pkill -f "streamlit run" || true
 sleep 3
 
 echo "🚀 Starting Streamlit..."
-nohup streamlit run app.py \
+nohup "$APP_DIR/venv/bin/streamlit" run app.py \
     --server.port $PORT \
     --server.address 0.0.0.0 \
     >> "$APP_LOG" 2>&1 &
-
 sleep 5
 
 if lsof -i:$PORT > /dev/null
