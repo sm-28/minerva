@@ -5,7 +5,7 @@ set -e  # Exit immediately if a command fails
 # CONFIG
 # =============================
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
-BRANCH="main"
+BRANCH="master"
 PORT=8501
 LOG_DIR="$APP_DIR/logs"
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
