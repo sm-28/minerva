@@ -29,30 +29,25 @@ from rag import (
 # Prompts & Constants
 # ---------------------------------------------------------------------------
 
-INDUSTRY_CLASSIFIER_SYSTEM = """You are an industry classifier. The available industries are: {industries}.
-Given a user query, output ONLY the exact industry name from the list or 'UNKNOWN'. 
-Examples:
-- "Can you help with my credit card?" -> Fintech
-- "How do I fix my warehouse roof?" -> Warehouses
-- "Tell me about mobile banking" -> Fintech
-- "Cold roofing solutions" -> Warehouses
 
-Identify the industry based on the core topic of the user's question."""
-
-SCOPE_CLASSIFIER_SYSTEM = """You are a scope classifier for the {industry} industry. 
-Available Topics: {topics}.
+SCOPE_CLASSIFIER_SYSTEM = """You are a scope classifier for a professional assistant in the {industry} sector.
 User Query: {query}
+Conversation Summary: {summary}
 
-Instructions:
-1. If the query is about the industry, its services, the company's background, history, experience, or track record, output 'RELATED'.
-2. If the user is expressing interest in the next steps, asking to book an appointment, requesting a consultation, or asking for contact details/pricing, output 'RELATED'.
-3. Even if it's a short "yes", "sure", "book it" following a suggestion, it's 'RELATED'.
-4. If it's a greeting (hi, hello) or completely unrelated (weather, jokes, general knowledge), output 'GENERAL'.
-5. Output ONLY the word 'RELATED' or 'GENERAL' with no punctuation.
-6. When in doubt, prefer 'RELATED'.
+Task: Determine if the User Query is relevant to the professional domain of {industry} or the current business conversation.
+
+1. Output 'INDUSTRY_SPECIFIC' if the query:
+   - Relates to {industry} services, expertise, products, or company information.
+   - Is a logical continuation, confirmation, or action request (like scheduling) based on the session summary.
+   - Specifically addresses business-related inquiries within this domain.
+
+2. Output 'GENERAL' if the query:
+   - Is a standalone greeting or social pleasantry.
+   - Concerns a completely unrelated industry, generic consumer products, or general knowledge topics outside this business context.
+   - Is irrelevant to the professional role of a representative in {industry}.
+
+Output ONLY 'INDUSTRY_SPECIFIC' or 'GENERAL'.
 """
-
-TOPIC_CLASSIFIER_SYSTEM = "You are a topic classifier. Given a list of topics ({topics}) for {industry}, determine which one the user is asking about. Output ONLY the exact topic name or 'OUT_OF_SCOPE'. If it's a broad industry question, pick the most relevant topic."
 
 # New RAG System Prompt
 SYSTEM_PROMPT = """
@@ -61,19 +56,36 @@ Conversation Summary: {summary}
 
 INSTRUCTIONS:
 1. Answer using the provided context and the summary.
-2. Do NOT repeat your initial greeting or the list of industries you specialize in.
-3. If the user is responding with a confirmation, affirmation (e.g. "Yes", "Sure"), or following up on a task (e.g. scheduling, booking), use the Conversation Summary to provide a natural response.
-3. If the information is missing from both the context and the summary, say: "I do not have that information in my knowledge base."
-4. Respond in first person, concisely (approx 20 words).
-5. Usually end with a question to keep things moving, UNLESS the goal is fully achieved.
-6. CRITICAL CLOSURE RULE: Trigger completion ONLY when a specific commitment is FINALIZED. 
-   - ACHIEVED: "Yes, Friday at 10 AM is perfect" or "My number is 555-0123".
+2. ADHERE TO NATURAL SPEECH: Speak like a human on a phone call. Use fluid transitions instead of "1, 2, 3" or "First, second".
+3. NEVER use numbered lists, bullet points, or mechanical lists (e.g., "1. Topic, 2. Topic"). Use natural phrasing like "either X or Y" or "including both A and B".
+4. Do NOT repeat your initial greeting or the list of industries you specialize in.
+5. If the user is responding with a confirmation, affirmation (e.g. "Yes", "Sure"), or following up on a task (e.g. scheduling, booking), use the Conversation Summary to provide a natural response.
+6. If the information is missing from both the context and the summary, say exactly: "NO_INFO_AVAILABLE"
+7. Respond in first person, concisely (approx 20 words).
+8. Usually end with a question to keep things moving, UNLESS the goal is fully achieved.
+9. CRITICAL CLOSURE RULE: Trigger completion ONLY when a specific commitment is FINALIZED. 
+   - ACHIEVED: "Yes, tomorrow at 3 PM is perfect" or "Great, Friday at 10 AM is noted".
    - NOT ACHIEVED: "Yes please", "Book a time", "I want a consultation", "Tell me more".
-7. If the user expresses interest (e.g., "Yes", "Book it") but hasn't picked a time/date yet, you MUST ask: "What day or time would work best for you?" 
-8. Do NOT append "[COMPLETE]" until the user has actually picked a slot or provided contact info.
-9. To complete: thank the user warmly, confirm the final details (e.g., "Great, I've noted your appointment for Friday at 10 AM. Talk soon!"), and append exactly "[COMPLETE]" at the end.
-10. Ensure your response is aligned with this steering instruction: {goal}.
+10. If the user provided a time or detail (e.g., "Tomorrow 3 PM"), ACKNOWLEDGE IT SPECIFICALLY. 
+11. To complete: thank the user warmly, confirm the final details (e.g., "Great, I've noted your appointment for Friday at 10 AM. Talk soon!"), and append exactly "[COMPLETE]" at the end.
+12. Ensure your response is aligned with this steering instruction: {goal}.
 """
+
+VOICE_MAPPING = {
+    "Female - Professional": "anushka",
+    "Female - Composed": "vidya",
+    "Female - Casual": "manisha",
+    "Male - Professional": "hitesh",
+    "Male - Bold": "karun"
+}
+
+SPEED_MAPPING = {
+    "Slower": 0.8,
+    "Slow": 0.9,
+    "Normal": 1.0,
+    "Fast": 1.1,
+    "Faster": 1.2
+}
 
 log = get_logger("app")
 logging.basicConfig(level=logging.INFO)
@@ -342,7 +354,15 @@ def get_client_topics():
             prompt = f"Based on these following contexts {context} \n from a {industry} company, list maximum of 5 specific customer enquiry topics strictly based on the provided context. Output only the topics (3 words max), one per line, no numbering."
             response = sarvam.chat_completion("You are a helpful assistant.", prompt, temperature=0.0, max_tokens=100)
             
-            derived = [t.strip("- ").strip() for t in response.split("\n") if t.strip()]
+            # Clean up derived topics (strip numbering, bullets, etc.)
+            derived = []
+            for t in response.split("\n"):
+                t = t.strip()
+                if t:
+                    # Strip "1. ", "2) ", "- ", etc.
+                    t = re.sub(r'^\s*[\d\.\-\*\)]+\s*', '', t)
+                    if t:
+                        derived.append(t)
             topics[index_name] = derived
             log.info(f"Flow: Derived topics for {index_name}")
         except Exception as e:
@@ -363,7 +383,6 @@ def _init_state():
         "latency_log":       [],
         "has_greeted":       False,
         "selected_client":   None, # dict from CLIENTS
-        "selected_topic":    None,
         "turn_count":        0,
         "derived_topics":    get_client_topics(),
         "last_audio_processed": None, # hash of last recording handled
@@ -372,6 +391,8 @@ def _init_state():
         "final_summary":     None,   # final wrap-up summary
         "pending_completion": False, # Flag to trigger end after processing current turn
         "spoken_language":   "Auto-Detect",
+        "tts_speaker":       "anushka",
+        "tts_speed":         1.0,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -382,6 +403,21 @@ def _get_sarvam() -> SarvamClient:
     if st.session_state["sarvam"] is None:
         st.session_state["sarvam"] = SarvamClient()
     return st.session_state["sarvam"]
+
+
+def reset_session():
+    """Reset conversation and session-specific state without logging out."""
+    for key in ["unknown_questions", "conversation", "latency_log", "session_ended", "has_greeted", "audio_played_keys", "selected_client", "turn_count", "history_summary", "final_summary", "pending_completion"]:
+        if key in ["session_ended", "has_greeted", "pending_completion"]:
+            st.session_state[key] = False
+        elif key == "audio_played_keys":
+            st.session_state[key] = set()
+        elif key in ["selected_client", "history_summary", "final_summary"]:
+            st.session_state[key] = None if key != "history_summary" else ""
+        elif key == "turn_count":
+            st.session_state[key] = 0
+        else:
+            st.session_state[key] = []
 
 
 def _ensure_vector_store():
@@ -427,8 +463,19 @@ def render_sidebar():
                 for t in topics:
                     st.markdown(f"- {t}")
         
-        st.markdown(f"**Topic:** {st.session_state['selected_topic'] or 'None'}")
         st.markdown(f"**Turns:** {st.session_state['turn_count']}")
+        
+        if st.session_state["conversation"] and not st.session_state["session_ended"]:
+            if st.button("⛔️ End Conversation", use_container_width=True, type="primary"):
+                st.session_state["session_ended"] = True
+                # Generate final summary immediately if it doesn't exist
+                if not st.session_state.get("final_summary"):
+                    log.info("Flow: Manual end - generating final session summary")
+                    sarvam = _get_sarvam()
+                    full_history = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state["conversation"]])
+                    sum_prompt = f"Summarize this customer conversation into 3 bullet points: Main interest, Key details provided, and Business Outcome. History:\n{full_history}"
+                    st.session_state["final_summary"] = sarvam.chat_completion("You are a business summarizer.", sum_prompt)
+                st.rerun()
         
         st.divider()
         st.markdown("## 🎙️ Minerva Settings")
@@ -447,6 +494,51 @@ def render_sidebar():
             index=0,
             help="Locking the language can improve accuracy if auto-detect is failing."
         )
+
+        st.markdown("### 🎭 Voice")
+        voice_names = list(VOICE_MAPPING.keys())
+        default_voice_idx = 0
+        current_speaker = st.session_state.get("tts_speaker", "anushka")
+        for i, (name, speaker) in enumerate(VOICE_MAPPING.items()):
+            if speaker == current_speaker:
+                default_voice_idx = i
+                break
+        
+        selected_voice_name = st.selectbox("Change Voice:", options=voice_names, index=default_voice_idx)
+        st.session_state["tts_speaker"] = VOICE_MAPPING[selected_voice_name]
+
+        st.markdown("### ⚡ Speed")
+        speed_names = list(SPEED_MAPPING.keys())
+        default_speed_idx = 2 # Normal
+        current_speed = st.session_state.get("tts_speed", 1.0)
+        for i, (name, val) in enumerate(SPEED_MAPPING.items()):
+            if abs(val - current_speed) < 0.01:
+                default_speed_idx = i
+                break
+        
+        selected_speed_name = st.selectbox("Change Speed:", options=speed_names, index=default_speed_idx)
+        st.session_state["tts_speed"] = SPEED_MAPPING[selected_speed_name]
+
+        st.divider()
+
+        if st.session_state["selected_client"]:
+            st.markdown("### 🏢 Industry")
+            industry_names = get_available_industries()
+            current_industry = st.session_state["selected_client"]["Industry"]
+            try:
+                industry_idx = industry_names.index(current_industry)
+            except ValueError:
+                industry_idx = 0
+            
+            new_industry = st.selectbox("Switch Industry:", options=industry_names, index=industry_idx)
+            if new_industry != current_industry:
+                # Find the matching client config
+                for c in CLIENTS:
+                    if c["Industry"] == new_industry:
+                        reset_session()
+                        st.session_state["selected_client"] = c
+                        st.rerun()
+        
         st.divider()
 
         # Unknown questions log
@@ -571,26 +663,56 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # Pre-load vector stores
-    if not st.session_state["vector_store_ok"]:
-        for client in CLIENTS:
-            try:
-                load_vector_store(client["index"])
-            except Exception as e:
-                st.warning(f"Could not load index for {client['Client']}: {e}")
-        st.session_state["vector_store_ok"] = True
+    # 1. Industry Selection (mandatory before greeting)
+    if not st.session_state["selected_client"]:
+        st.subheader("Select your industry to begin")
+        cols = st.columns([1, 2, 1])
+        with cols[1]:
+            with st.form("select_industry_form"):
+                industry_names = get_available_industries()
+                selected_ind = st.selectbox("Industry:", options=["Select..."] + industry_names)
+                submit = st.form_submit_button("Start Minerva", use_container_width=True)
+                
+                if submit and selected_ind != "Select...":
+                    for c in CLIENTS:
+                        if c["Industry"] == selected_ind:
+                            st.session_state["selected_client"] = c
+                            # Load only selected index
+                            try:
+                                with st.spinner(f"Loading {selected_ind} knowledge base..."):
+                                    load_vector_store(c["index"])
+                                st.session_state["vector_store_ok"] = True
+                            except Exception as e:
+                                st.error(f"Could not load index for {selected_ind}: {e}")
+                                st.stop()
+                            st.rerun()
+            st.info("Minerva will talk to you within the context of the selected industry.")
+            st.stop()
 
-    # Welcome greeting
+    # Welcome greeting (after industry selection)
     if not st.session_state.get("has_greeted", False):
         sarvam = _get_sarvam()
-        industries_list = get_available_industries()
-        industries_str = ", ".join(industries_list)
-        greeting_text = f"Welcome to Minerva. I am your intelligent voice assistant. I specialize in {industries_str}. How can I help you today?"
+        client = st.session_state["selected_client"]
+        industry = client["Industry"]
+        topics_list = st.session_state["derived_topics"].get(client["index"], [])
+        
+        if len(topics_list) > 1:
+            topics_phrase = ", ".join(topics_list[:2]) + f", and {topics_list[2]}" if len(topics_list) >= 3 else " and ".join(topics_list[:2])
+        elif topics_list:
+            topics_phrase = topics_list[0]
+        else:
+            topics_phrase = "various industry related inquiries"
+
+        greeting_text = f"Welcome to Minerva! I am your Intellignt voice assistant for {industry}. I can help you with things like {topics_phrase}. How can I assist you today?"
         st.session_state["has_greeted"] = True
         greeting_audio = None
         try:
             with st.spinner("Initializing voice..."):
-                greeting_audio = sarvam.text_to_speech(greeting_text)
+                greeting_audio = sarvam.text_to_speech(
+                    greeting_text, 
+                    speaker=st.session_state["tts_speaker"], 
+                    pace=st.session_state["tts_speed"]
+                )
         except Exception as e:
             log.error(f"Greeting TTS failed: {e}")
         
@@ -607,6 +729,18 @@ def main():
     
     # We only show the summary if session_ended is True and we AREN'T currently processing a final message
     show_summary = session_ended and not pending_completion
+
+    # Display topics prominently if conversation just started
+    if len(st.session_state["conversation"]) <= 1 and not show_summary:
+        client = st.session_state["selected_client"]
+        topics_list = st.session_state["derived_topics"].get(client["index"], [])
+        if topics_list:
+            st.markdown(f"### 💡 Topics I can help you with:")
+            cols = st.columns(len(topics_list[:5]))
+            for i, topic in enumerate(topics_list[:5]):
+                with cols[i]:
+                    st.markdown(f'<div class="metric-tile" style="height: 100%; display: flex; align-items: center; justify-content: center; font-weight: 500;">{topic}</div>', unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
 
     # Conversation history (using chat_message for better aesthetic)
     for i, msg in enumerate(st.session_state["conversation"]):
@@ -718,141 +852,109 @@ def main():
             response = ""
             is_unknown = False
 
-            # Step 2: Industry Detection (if needed)
-            if not st.session_state["selected_client"]:
-                with st.status("Identifying industry...", expanded=False) as status:
-                    with tracker.measure("Classification (Industry)"):
-                        industries = ", ".join(get_available_industries())
-                        sys_prompt = INDUSTRY_CLASSIFIER_SYSTEM.format(industries=industries)
-                        user_prompt = f"User Query: {transcript}"
-                        choice = sarvam.chat_completion(sys_prompt, user_prompt, temperature=0.0, max_tokens=20)
-                        
-                        # Fuzzy match industry
-                        match = None
-                        low_choice = choice.lower()
-                        for c in CLIENTS:
-                            ind_name = c["Industry"].lower()
-                            if ind_name in low_choice or low_choice in ind_name:
-                                match = c
-                                break
-                        
-                        if match:
-                            st.session_state["selected_client"] = match
-                            log.info(f"Flow: Industry identified as '{match['Industry']}'")
-                            status.update(label=f"Industry: {match['Industry']}", state="complete")
-                            
-                            if len(transcript.split()) <= 2:
-                                log.info("Flow: Short query - offering greeting and topics")
-                                topics_list = st.session_state["derived_topics"].get(match["index"], [])
-                                spoken_topics = ", ".join(topics_list[:3]) + (" and others" if len(topics_list) > 3 else "")
-                                response = f"I see you're interested in {match['Industry']}. I can help you with {spoken_topics}. What would you like to know?"
-                                display_response = f"I see you're interested in {match['Industry']}. I can help you with: {', '.join(topics_list)}. What would you like to know?"
-                                st.session_state["pending_display_response"] = display_response
-                            else:
-                                log.info("Flow: Long query detected - proceeding to RAG immediately")
-                        else:
-                            log.info("Flow: Industry match failed")
-                            response = f"I am sorry, I currently only specialize in {industries}. Please let me know which of these you are interested in."
-                            status.update(label="Unknown Industry", state="error")
-            else:
-                log.info("Flow: Industry already selected")
-            
-            if st.session_state["selected_client"] and not response:
+            if st.session_state["selected_client"]:
                 client = st.session_state["selected_client"]
                 topics_list = st.session_state["derived_topics"].get(client["index"], [])
                 topics_str = ", ".join(topics_list)
                 
                 with st.status("Checking scope...", expanded=False) as status:
                     # Scope Detection
-                    with tracker.measure("Classification (Scope)"):
+                    with tracker.measure("Classification"):
+                        curr_summary = st.session_state.get("history_summary", "")
                         scope_sys = SCOPE_CLASSIFIER_SYSTEM.format(
                             industry=client['Industry'],
-                            topics=topics_str,
-                            query=transcript
+                            query=transcript,
+                            summary=curr_summary
                         )
                         scope_choice = sarvam.chat_completion(scope_sys, f"User Query: {transcript}", temperature=0.0, max_tokens=10)
-                    if "RELATED" in scope_choice.upper():
-                        log.info(f"Flow: Query is within scope for '{client['Industry']}'")
-                        st.session_state["turn_count"] += 1
-                        
-                        # Topic Detection (Advisory only)
-                        with tracker.measure("Classification (Topic)"):
-                            topics = ", ".join(st.session_state["derived_topics"].get(client["index"], []))
-                            topic_sys = TOPIC_CLASSIFIER_SYSTEM.format(industry=client['Industry'], topics=topics)
-                            topic_user = f"Topics: {topics}\nUser Query: {transcript}"
-                            topic_choice = sarvam.chat_completion(topic_sys, topic_user, temperature=0.0, max_tokens=30)
-                        
-                        # Even if topic matches OUT_OF_SCOPE, we proceed with RAG if industry matched
-                        if topic_choice.upper() != "OUT_OF_SCOPE":
-                            log.info(f"Flow: Topic identified as '{topic_choice}'")
-                            st.session_state["selected_topic"] = topic_choice
-                            status.update(label=f"Topic: {topic_choice}", state="complete")
-                        else:
-                            log.info("Flow: Topic classifier returned OUT_OF_SCOPE but proceeding with RAG")
-                            status.update(label=f"Industry query: {client['Industry']}", state="complete")
-                        
-                        # Step 4: RAG
-                        with tracker.measure("Retrieval"):
-                            chunks = retrieve(transcript, client["index"], top_k=3)
-                        
-                        # Decide if we should proceed to LLM
-                        # We proceed if: 
-                        # 1. We found some chunks with decent scores
-                        # 2. It's a conversational turn (short or refers to scheduling/next steps)
-                        scheduling_keywords = ["visit", "call", "appointment", "friday", "monday", "tuesday", "wednesday", "thursday", "saturday", "sunday", "morning", "afternoon", "evening", "time", "date", "schedule"]
-                        is_likely_continuation = len(transcript.split()) <= 8 and (
-                            any(word in transcript.lower() for word in ["yes", "yeah", "ok", "sure", "elaborate", "tell", "explain", "more", "details"]) or
-                            any(word in transcript.lower() for word in scheduling_keywords)
-                        )
-                        
-                        # If we are deep in the conversation (turn 3+), we trust the scope classifier and history more
-                        is_goal_steering_phase = st.session_state["turn_count"] >= 3
-                        
-                        if (chunks and chunks[0]["score"] > 0.15) or is_likely_continuation or is_goal_steering_phase:
-                            log.info(f"Flow: Proceeding to LLM. Chunks: {len(chunks)}, Continuation: {is_likely_continuation}, GoalPhase: {is_goal_steering_phase}")
-                            with tracker.measure("LLM"):
-                                # Use turn count and summary
-                                goal_text = client["Goal"]
-                                if st.session_state["turn_count"] >= 5:
-                                    goal_steer = f"STRONG PUSH: {goal_text}. Lead the user to complete this now."
-                                elif st.session_state["turn_count"] >= 1:
-                                    goal_steer = f"Nudge towards: {goal_text}"
-                                else:
-                                    goal_steer = "None"
-
-                                curr_summary = st.session_state.get("history_summary", "")
-                                if not curr_summary:
-                                    conv = st.session_state["conversation"]
-                                    start_idx = 1 if len(conv) > 1 and conv[0]["role"] == "assistant" else 0
-                                    recent_msgs = [f"{m['role']}: {m['content']}" for m in conv[start_idx:][-4:]]
-                                    curr_summary = "Previous turns: " + " | ".join(recent_msgs)
-
-                                sys_msg = SYSTEM_PROMPT.format(summary=curr_summary, goal=goal_steer)
-                                user_msg = build_rag_prompt(chunks, transcript)
-                                response = sarvam.chat_completion(sys_msg, user_msg, temperature=0.3)
-                                
-                                # Check for completion signal
-                                if "[COMPLETE]" in response:
-                                    response = response.replace("[COMPLETE]", "").strip()
-                                    # Set PENDING completion so we process THIS turn's audio first
-                                    st.session_state["pending_completion"] = True
-                                    
-                                    # Generate final business summary
-                                    log.info("Flow: Generating final session summary")
-                                    with tracker.measure("Summarize"):
-                                        full_history = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state["conversation"]])
-                                        sum_prompt = f"Summarize this customer conversation into 3 bullet points: Main interest, Key details provided, and Business Outcome (e.g. appointment booked for Friday). History:\n{full_history}"
-                                        st.session_state["final_summary"] = sarvam.chat_completion("You are a business summarizer.", sum_prompt)
-                        else:
-                            log.info("Flow: RAG found no relevant information and not a conversational turn")
-                            is_unknown = True
-                            response = "I got your topic of interest, but I do not have specific information about it in my knowledge base. I have logged this and can arrange a follow-up."
-                            st.session_state["unknown_questions"].append(transcript)
-                    else:
-                        log.info("Flow: Scope classifier returned GENERAL/OFF-TOPIC")
+                    st.session_state["turn_count"] += 1
+                    
+                    # Step 4: RAG
+                    with tracker.measure("Retrieval"):
+                        chunks = retrieve(transcript, client["index"], top_k=3)
+                    
+                    # Evaluation Logic for the 4 Cases
+                    # Case determinants
+                    is_industry_specific = "INDUSTRY_SPECIFIC" in scope_choice.upper()
+                    
+                    # We consider info "available" if:
+                    # 1. We found some chunks with decent scores
+                    # 2. It's a conversational turn (short or refers to scheduling/next steps)
+                    # 3. We are deep in the conversation (turn 3+), trusting the session history
+                    scheduling_keywords = ["visit", "call", "appointment", "friday", "monday", "tuesday", "wednesday", "thursday", "saturday", "sunday", "morning", "afternoon", "evening", "time", "date", "schedule"]
+                    is_likely_continuation = len(transcript.split()) <= 8 and (
+                        any(word in transcript.lower() for word in ["yes", "yeah", "ok", "sure", "elaborate", "tell", "explain", "more", "details"]) or
+                        any(word in transcript.lower() for word in scheduling_keywords)
+                    )
+                    is_goal_steering_phase = st.session_state["turn_count"] >= 3
+                    
+                    info_available = (chunks and chunks[0]["score"] > 0.15) or is_likely_continuation or is_goal_steering_phase
+                    
+                    proceed_to_llm = False
+                    
+                    if not is_industry_specific and not info_available:
+                        # Case 1: Not Industry Specific & Info NOT available: Deny gently
                         response = f"I am sorry, I can only assist with inquiries related to {client['Industry']}. Can I help you with any more questions on this topic?"
                         status.update(label="Out of Industry Scope", state="error")
+                    
+                    elif not is_industry_specific and info_available:
+                        # Case 2: Not Industry Specific & Info available: Provide Grounded Results
+                        proceed_to_llm = True
+                    
+                    elif is_industry_specific and info_available:
+                        # Case 3: Industry Specific & Info available: Provide Grounded Results
+                        proceed_to_llm = True
+                        
+                    elif is_industry_specific and not info_available:
+                        # Case 4: Industry Specific & Info NOT available: Appreciate/acknoweldge and add to tracker
+                        response = f"I appreciate your interest in this detail about our {client['Industry']} services. I don't have that specific information in my current knowledge base. I've logged this for a senior representative to review and provide info. Is there anything else I can help you with?"
+                        st.session_state["unknown_questions"].append(transcript)
+                        is_unknown = True
+                        status.update(label="Info not available (logged)", state="warning")
 
+                    if proceed_to_llm:
+                        log.info(f"Flow: Proceeding to LLM. Chunks: {len(chunks)}, Continuation: {is_likely_continuation}, GoalPhase: {is_goal_steering_phase}")
+                        status.update(label=f"Responding for {client['Industry']}...", state="complete")
+                        with tracker.measure("LLM"):
+                            # Use turn count and summary
+                            goal_text = client["Goal"]
+                            if st.session_state["turn_count"] >= 5:
+                                goal_steer = f"STRONG PUSH: {goal_text}. Lead the user to complete this now."
+                            elif st.session_state["turn_count"] >= 2:
+                                goal_steer = f"Nudge towards: {goal_text}"
+                            else:
+                                goal_steer = "None"
+
+                            curr_summary = st.session_state.get("history_summary", "")
+                            if not curr_summary:
+                                conv = st.session_state["conversation"]
+                                start_idx = 1 if len(conv) > 1 and conv[0]["role"] == "assistant" else 0
+                                recent_msgs = [f"{m['role']}: {m['content']}" for m in conv[start_idx:][-4:]]
+                                curr_summary = "Previous turns: " + " | ".join(recent_msgs)
+
+                            sys_msg = SYSTEM_PROMPT.format(summary=curr_summary, goal=goal_steer)
+                            user_msg = build_rag_prompt(chunks, transcript)
+                            response = sarvam.chat_completion(sys_msg, user_msg, temperature=0.3)
+                            
+                            # Check for completion signal
+                            if "[COMPLETE]" in response:
+                                response = response.replace("[COMPLETE]", "").strip()
+                                # Set PENDING completion so we process THIS turn's audio first
+                                st.session_state["pending_completion"] = True
+                                
+                                # Generate final business summary
+                                log.info("Flow: Generating final session summary")
+                                with tracker.measure("Summarize"):
+                                    full_history = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state["conversation"]])
+                                    sum_prompt = f"Summarize this customer conversation into 3 bullet points: Main interest, Key details provided, and Business Outcome (e.g. appointment booked for Friday). History:\n{full_history}"
+                                    st.session_state["final_summary"] = sarvam.chat_completion("You are a business summarizer.", sum_prompt)
+                            
+                            # Fallback if LLM decides the info is not actually in the context
+                            elif "NO_INFO_AVAILABLE".lower() in response.lower():
+                                log.info("Flow: LLM indicated info missing. Triggering Case 4 logic.")
+                                is_unknown = True
+                                response = f"I appreciate your interest in this detail about our {client['Industry']} services. I don't have that specific information in my current knowledge base. I've logged this for a senior representative to review and provide info. Is there anything else I can help you with?"
+                                st.session_state["unknown_questions"].append(transcript)
             # Step 5: Output (TTS)
             if response:
                 # Use display version if we saved one
@@ -868,7 +970,12 @@ def main():
                 audio_data = None
                 try:
                     with tracker.measure("TTS"):
-                        audio_data = sarvam.text_to_speech(response, det_lang)
+                        audio_data = sarvam.text_to_speech(
+                            response, 
+                            det_lang,
+                            speaker=st.session_state["tts_speaker"],
+                            pace=st.session_state["tts_speed"]
+                        )
                 except Exception as e:
                     log.error(f"Flow: TTS failed, proceeding with text only. Error: {e}")
                 
@@ -887,11 +994,13 @@ def main():
                     st.session_state["session_ended"] = True
                     st.session_state["pending_completion"] = False
                 
-                # Turn Management: Summarize every 3 turns to prevent overflow
-                if st.session_state["turn_count"] % 3 == 0 and st.session_state["turn_count"] > 0:
-                    log.info("Flow: Summarizing history to prevent memory overflow")
+                # Turn Management: Summarize every 2 turns if turn count > 2 to stay sharp
+                if st.session_state["turn_count"] > 2:
+                    log.info("Flow: Updating history summary for continuity")
                     prev_sum = st.session_state.get("history_summary", "")
-                    hist_str = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state["conversation"][-6:]])
+                    # Fetch last 4 messages (2 turns) for current context
+                    recent_msgs = [f"{m['role']}: {m['content']}" for m in st.session_state["conversation"][-4:]]
+                    hist_str = "\n".join(recent_msgs)
                     
                     if prev_sum:
                         sum_prompt = f"Current Summary: {prev_sum}\n\nNew messages:\n{hist_str}\n\nUpdate the summary to include key info from new messages. Keep it to 2-3 sentences."
@@ -921,9 +1030,9 @@ def main():
 
     # End Conversation button
     st.markdown("---")
-    col1, _ = st.columns([1, 4])
+    col1, _ = st.columns([1, 3])
     with col1:
-        if st.button("⛔️ End Conversation"):
+        if st.button("⛔️ End Conversation", use_container_width=True, type="primary"):
             st.session_state["session_ended"] = True
             st.rerun()
 

@@ -10,5 +10,11 @@
         "Industry": "Warehouses",
         "Goal": "Appointment Booking",
         "index": "thermilate_warehouse"
+    },
+    {
+        "Client": "Golden Eagle Real Estate",
+        "Industry": "Real Estate",
+        "Goal": "Site Visit Booking",
+        "index": "goldeneagle_realestate"
     }
 ]

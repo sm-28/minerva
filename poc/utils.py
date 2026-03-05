@@ -3,6 +3,8 @@ import logging
 from contextlib import contextmanager
 import streamlit as st
 from streamlit.runtime.scriptrunner import get_script_run_ctx
+from pathlib import Path
+from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -33,25 +35,81 @@ class ContextFilter(logging.Filter):
             pass
         return True
 
-# Configure root logger with the new format
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+import threading
 
-# Clear existing handlers to avoid duplicates
-if logger.hasHandlers():
-    logger.handlers.clear()
+class SessionFileHandler(logging.Handler):
+    """
+    A logging handler that routes log records to session-specific files.
+    The filename includes a human-readable timestamp and the session ID.
+    """
+    def __init__(self, log_dir="logs"):
+        super().__init__()
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(exist_ok=True)
+        self._handlers = {}
+        self._lock = threading.Lock()
 
-handler = logging.StreamHandler()
-handler.addFilter(ContextFilter())
-formatter = logging.Formatter(
-    fmt="%(asctime)s [%(levelname)s] [U:%(user_id)s] [S:%(session_id)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S"
-)
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+    def emit(self, record):
+        # We rely on ContextFilter to have injected session_id
+        session_id = getattr(record, 'session_id', 'no-session')
+        
+        # We only create files for actual Streamlit sessions
+        if session_id == 'no-session':
+            return
+
+        with self._lock:
+            if session_id not in self._handlers:
+                # Human readable timestamp: YYYY-MM-DD_HH-MM-SS
+                timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                # Filename: session_YYYY-MM-DD_HH-MM-SS_sid.log
+                log_file = self.log_dir / f"session_{timestamp}_{session_id[:8]}.log"
+                
+                handler = logging.FileHandler(log_file, encoding='utf-8')
+                if self.formatter:
+                    handler.setFormatter(self.formatter)
+                self._handlers[session_id] = handler
+            
+            self._handlers[session_id].emit(record)
+
+    def close(self):
+        with self._lock:
+            for h in self._handlers.values():
+                h.close()
+            self._handlers.clear()
+        super().close()
+
+# Global setup flag
+_logging_initialized = False
+_logging_lock = threading.Lock()
 
 def get_logger(name: str) -> logging.Logger:
-    """Return a named logger."""
+    """Return a named logger, ensuring the root logger is configured for session files."""
+    global _logging_initialized
+    
+    with _logging_lock:
+        if not _logging_initialized:
+            root = logging.getLogger()
+            root.setLevel(logging.INFO)
+            
+            formatter = logging.Formatter(
+                fmt="%(asctime)s [%(levelname)s] [U:%(user_id)s] [S:%(session_id)s] %(name)s: %(message)s",
+                datefmt="%H:%M:%S"
+            )
+
+            # 1. Console Handler
+            console_handler = logging.StreamHandler()
+            console_handler.addFilter(ContextFilter())
+            console_handler.setFormatter(formatter)
+            root.addHandler(console_handler)
+
+            # 2. Session File Handler
+            session_handler = SessionFileHandler()
+            session_handler.addFilter(ContextFilter())
+            session_handler.setFormatter(formatter)
+            root.addHandler(session_handler)
+
+            _logging_initialized = True
+            
     return logging.getLogger(name)
 
 def get_st_session_id() -> str:
@@ -129,13 +187,15 @@ def send_otp_email(to_email: str, otp_code: str, smtp_user: str, smtp_password: 
             smtp={'host': 'smtp.gmail.com', 'port': 465, 'ssl': True, 'user': smtp_user, 'password': smtp_password}
         )
         
+        log = get_logger("utils")
         if r.status_code == 250:
-            logger.info(f"OTP email sent successfully to {to_email}")
+            log.info(f"OTP email sent successfully to {to_email}")
             return True
         else:
-            logger.error(f"Failed to send OTP to {to_email}. SMTP Status: {r.status_code}")
+            log.error(f"Failed to send OTP to {to_email}. SMTP Status: {r.status_code}")
             return False
             
     except Exception as e:
-        logger.error(f"Failed to send OTP to {to_email}. Error: {e}")
+        log = get_logger("utils")
+        log.error(f"Failed to send OTP to {to_email}. Error: {e}")
         return False

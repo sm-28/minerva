@@ -131,13 +131,15 @@ class SarvamClient:
     # 3. Text-to-Speech
     # ------------------------------------------------------------------
 
-    def text_to_speech(self, text: str, language_code: str = TTS_LANGUAGE) -> bytes:
+    def text_to_speech(self, text: str, language_code: str = TTS_LANGUAGE, speaker: str = TTS_SPEAKER, pace: float = 0.9) -> bytes:
         """
         Convert text to audio bytes (WAV).
 
         Args:
             text:          The text to synthesise.
             language_code: BCP-47 language code for the voice.
+            speaker:       The speaker voice name.
+            pace:          The speed of the speech (0.5 to 2.0).
 
         Returns:
             WAV audio bytes ready for playback.
@@ -150,19 +152,34 @@ class SarvamClient:
             logger.warning("TTS: received 'unknown' language code. Falling back to %s", TTS_LANGUAGE)
             language_code = TTS_LANGUAGE
 
-        logger.debug("TTS: synthesising %d chars", len(text))
+        logger.debug("TTS: synthesising %d chars with speaker %s and pace %.2f", len(text), speaker, pace)
         try:
             response = self._client.text_to_speech.convert(
                 text=text,
                 target_language_code=language_code,
-                pace=0.9,
-                speaker=TTS_SPEAKER,
+                pace=pace,
+                speaker=speaker,
                 model=TTS_MODEL,
             )
-            # SDK returns TextToSpeechResponse with audios: List[str] (base64-encoded WAV)
-            audio_b64 = response.audios[0]
-            audio_bytes = base64.b64decode(audio_b64)
-            return audio_bytes
+            # Join all audio portions (Sarvam may return multiple for long text)
+            full_audio = bytearray()
+            for i, b64 in enumerate(response.audios):
+                chunk = base64.b64decode(b64)
+                if i == 0:
+                    full_audio.extend(chunk)
+                else:
+                    # Skip the 44-byte WAV header for subsequent chunks
+                    full_audio.extend(chunk[44:])
+            
+            # Update the Master WAV header with the correct total size
+            if len(full_audio) > 44:
+                import struct
+                # Offset 4 (file size - 8)
+                full_audio[4:8] = struct.pack("<I", len(full_audio) - 8)
+                # Offset 40 (data size)
+                full_audio[40:44] = struct.pack("<I", len(full_audio) - 44)
+            
+            return bytes(full_audio)
         except Exception as exc:
             logger.error("TTS failed: %s", exc)
             raise RuntimeError(f"Text-to-Speech failed: {exc}") from exc
