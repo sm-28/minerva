@@ -910,7 +910,7 @@ def main():
                         response = f"I appreciate your interest in this detail about our {client['Industry']} services. I don't have that specific information in my current knowledge base. I've logged this for a senior representative to review and provide info. Is there anything else I can help you with?"
                         st.session_state["unknown_questions"].append(transcript)
                         is_unknown = True
-                        status.update(label="Info not available (logged)", state="warning")
+                        status.update(label="Information not available. Please try again.", state="error")
 
                     if proceed_to_llm:
                         log.info(f"Flow: Proceeding to LLM. Chunks: {len(chunks)}, Continuation: {is_likely_continuation}, GoalPhase: {is_goal_steering_phase}")
