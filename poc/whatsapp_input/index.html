@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        .container {
+            display: flex;
+            align-items: center;
+            background-color: #202c33;
+            border-radius: 40px;
+            padding: 2px 16px;
+            box-sizing: border-box;
+            width: 100%;
+            height: 52px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+        }
+
+        .icon {
+            color: #8696a0;
+            cursor: pointer;
+            padding: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color 0.2s;
+        }
+
+        .icon:hover {
+            color: #d1d7db;
+        }
+
+        svg {
+            width: 24px;
+            height: 24px;
+            fill: currentColor;
+        }
+
+        input {
+            flex-grow: 1;
+            background: transparent;
+            border: none;
+            color: #d1d7db;
+            font-size: 15px;
+            padding: 10px 12px;
+            outline: none;
+        }
+
+        input::placeholder {
+            color: #8696a0;
+        }
+
+        .mic-btn {
+            color: #8696a0;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            padding: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            transition: transform 0.1s, color 0.2s, background-color 0.2s;
+            position: relative;
+        }
+
+        .mic-btn.recording {
+            color: #ff2e55;
+            transform: scale(1.2);
+        }
+
+        .mic-btn.recording::after {
+            content: '';
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background: rgba(255, 46, 85, 0.2);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+                opacity: 0.8;
+            }
+
+            100% {
+                transform: scale(2.5);
+                opacity: 0;
+            }
+        }
+
+        .green-dot {
+            width: 6px;
+            height: 6px;
+            background-color: #00a884;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <input type="text" id="text-input" placeholder="Type a message" autocomplete="off">
+        <!-- Green indicator dot -->
+        <div class="green-dot" style="margin-left: auto;"></div>
+        <!-- Mic Button -->
+        <button class="mic-btn" id="mic-btn">
+            <svg viewBox="0 0 24 24" width="24" height="24">
+                <path fill="currentColor"
+                    d="M11.999 14.942c2.001 0 3.531-1.53 3.531-3.531V4.35c0-2.001-1.53-3.15-3.531-3.15S8.469 2.35 8.469 4.35v7.061c0 2.001 1.53 3.531 3.53 3.531zm6.238-3.53c0 3.531-2.942 6.002-6.237 6.002s-6.237-2.471-6.237-6.002H3.721c0 4.001 3.178 7.297 7.061 7.885v3.884h2.434v-3.884c3.884-.588 7.061-3.884 7.061-7.885h-2.04z">
+                </path>
+            </svg>
+        </button>
+    </div>
+
+    <script>
+        function sendMessageToStreamlitClient(type, data) {
+            var out = {
+                isStreamlitMessage: true,
+                type: type,
+            };
+            for (var key in data) {
+                out[key] = data[key];
+            }
+            window.parent.postMessage(out, "*");
+        }
+
+        function setComponentValue(value) {
+            sendMessageToStreamlitClient("streamlit:setComponentValue", { value: value });
+        }
+
+        function onReady() {
+            sendMessageToStreamlitClient("streamlit:componentReady", { apiVersion: 1 });
+        }
+
+        function setFrameHeight(height) {
+            sendMessageToStreamlitClient("streamlit:setFrameHeight", { height: height });
+        }
+
+        const textInput = document.getElementById('text-input');
+        const micBtn = document.getElementById('mic-btn');
+        let recorder;
+        let chunks = [];
+        let isRecording = false;
+
+        // Handle text submission
+        textInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && textInput.value.trim() !== '') {
+                setComponentValue({
+                    type: 'text',
+                    content: textInput.value.trim(),
+                    timestamp: Date.now()
+                });
+                textInput.value = '';
+            }
+        });
+
+        // Handle recording
+        async function startRecording() {
+            if (isRecording) return;
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                recorder = new MediaRecorder(stream);
+                recorder.ondataavailable = e => {
+                    if (e.data.size > 0) chunks.push(e.data);
+                };
+                recorder.onstop = async () => {
+                    if (chunks.length > 0) {
+                        const blob = new Blob(chunks, { type: 'audio/webm' });
+                        const reader = new FileReader();
+                        reader.readAsDataURL(blob);
+                        reader.onloadend = () => {
+                            const base64 = reader.result.split(',')[1];
+                            setComponentValue({
+                                type: 'audio',
+                                content: base64,
+                                timestamp: Date.now()
+                            });
+                        };
+                    }
+                    isRecording = false;
+                    micBtn.classList.remove('recording');
+                };
+                chunks = [];
+                recorder.start();
+                isRecording = true;
+                micBtn.classList.add('recording');
+
+                if ("vibrate" in navigator) {
+                    navigator.vibrate(50);
+                }
+            } catch (err) {
+                console.error("Mic access denied", err);
+            }
+        }
+
+        function stopRecording() {
+            if (recorder && recorder.state !== 'inactive') {
+                recorder.stop();
+                recorder.stream.getTracks().forEach(track => track.stop());
+            }
+        }
+
+        micBtn.addEventListener('mousedown', startRecording);
+        window.addEventListener('mouseup', () => { if (isRecording) stopRecording(); });
+
+        micBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            startRecording();
+        }, { passive: false });
+        window.addEventListener('touchend', () => { if (isRecording) stopRecording(); });
+
+        onReady();
+        setFrameHeight(60);
+    </script>
+</body>
+
+</html>

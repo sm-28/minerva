@@ -57,7 +57,7 @@ class SarvamClient:
     # 1. Speech-to-Text
     # ------------------------------------------------------------------
 
-    def transcribe(self, audio_bytes: bytes, language_code: str = "en-IN") -> tuple[str, str]:
+    def transcribe(self, audio_bytes: bytes, language_code: str = "en-IN", extension: str = "wav") -> tuple[str, str]:
         """
         Convert raw audio bytes (WAV format) to a transcript string.
 
@@ -73,7 +73,7 @@ class SarvamClient:
         """
         logger.debug("STT: sending %d bytes", len(audio_bytes))
         audio_file = io.BytesIO(audio_bytes)
-        audio_file.name = "audio.wav"  # SDK uses filename to infer format
+        audio_file.name = f"audio.{extension}"  # SDK uses filename to infer format
 
         try:
             response = self._client.speech_to_text.transcribe(

@@ -5,8 +5,11 @@ import time
 import re
 import logging
 import hashlib
+import base64
+import datetime
 
 import streamlit as st
+from whatsapp_input import whatsapp_input
 
 # Add poc/ to path when running from project root
 sys.path.insert(0, os.path.dirname(__file__))
@@ -55,7 +58,7 @@ You are representative of the company.
 Conversation Summary: {summary}
 
 INSTRUCTIONS:
-1. Answer using the provided context and the summary.
+1. Answer using the provided context and the summary not exceeding 30 words.
 2. ADHERE TO NATURAL SPEECH: Speak like a human on a phone call. Use fluid transitions instead of "1, 2, 3" or "First, second".
 3. NEVER use numbered lists, bullet points, or mechanical lists (e.g., "1. Topic, 2. Topic"). Use natural phrasing like "either X or Y" or "including both A and B".
 4. Do NOT repeat your initial greeting or the list of industries you specialize in.
@@ -211,107 +214,192 @@ def check_auth():
 
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Segoe+UI:wght@400;600&display=swap');
 
     html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     }
 
-    /* Gradient header */
+    /* WhatsApp Dark Theme Background */
+    [data-testid="stAppViewContainer"] {
+        background-color: #0b141a !important;
+        background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png') !important;
+        background-blend-mode: overlay !important;
+        background-attachment: fixed !important;
+    }
+
+    /* --- Layout Fixes --- */
+    
+    .chat-toolbar {
+        background: #202c33 !important;
+        height: 110px !important;
+        padding: 5px 20px !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+        border-bottom: 2px solid #2a3942 !important;
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        z-index: 99999 !important;
+        text-align: center !important;
+        transition: all 0.3s ease !important;
+    }
+    
+    .chat-toolbar.shrunk {
+        height: 70px !important;
+        flex-direction: row !important;
+        align-items: center !important;
+    }
+    
+    .chat-toolbar h1 {
+        font-size: 1.8rem !important;
+        color: #e9edef !important;
+        margin: 0 !important;
+        padding: 5px 0 0 0 !important; /* Prevent top clipping */
+        font-weight: 600 !important;
+        line-height: 1.2 !important;
+    }
+    
+    .whatsapp-input-fixed {
+        position: fixed !important;
+        bottom: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        width: 100% !important;
+        background: #0b141a !important;
+        background: linear-gradient(to top, #0b141a 95%, transparent) !important;
+        padding: 15px 0 30px 0 !important;
+        z-index: 99998 !important;
+        display: flex !important;
+        justify-content: center !important;
+    }
+    
+    .whatsapp-input-wrapper {
+        width: 95% !important;
+        max-width: 850px !important;
+    }
+
+    [data-testid="stMainBlockContainer"], .main .block-container {
+        padding-top: 170px !important; /* More space for header */
+        padding-bottom: 140px !important; /* More space for input */
+    }
+
+    @media (min-width: 992px) {
+        .chat-toolbar, .whatsapp-input-fixed {
+            left: 120px !important;
+            width: calc(100% - 120px) !important;
+        }
+    }
+
+    /* --- Restored WhatsApp Elements --- */
+    .whatsapp-row {
+        display: flex !important;
+        width: 100% !important;
+        margin-bottom: 12px !important;
+        padding: 0 10px !important;
+    }
+    .whatsapp-row.user { justify-content: flex-end !important; }
+    .whatsapp-row.assistant { justify-content: flex-start !important; }
+
+    .bubble {
+        min-width: 280px;
+        max-width: 85%;
+        padding: 8px 12px 22px 12px;
+        border-radius: 8px;
+        position: relative;
+        font-size: 15px;
+        line-height: 1.4;
+        box-shadow: 0 1px 0.5px rgba(0,0,0,0.13);
+        word-wrap: break-word;
+    }
+
+    .assistant-bubble {
+        background-color: #202c33 !important;
+        color: #e9edef !important;
+        border-top-left-radius: 0 !important;
+        margin-left: 8px;
+    }
+    .assistant-bubble::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: -8px;
+        width: 10px;
+        height: 12px;
+        background-color: #202c33;
+        clip-path: polygon(100% 0, 0 0, 100% 100%);
+    }
+
+    .user-bubble {
+        background-color: #005c4b !important;
+        color: #e9edef !important;
+        border-top-right-radius: 0 !important;
+        margin-right: 8px;
+    }
+    .user-bubble::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        right: -8px;
+        width: 10px;
+        height: 12px;
+        background-color: #005c4b;
+        clip-path: polygon(0 0, 100% 0, 0 100%);
+    }
+
+    .whatsapp-time {
+        font-size: 11px !important;
+        color: rgba(233, 237, 239, 0.6) !important;
+        position: absolute;
+        bottom: 4px;
+        right: 8px;
+    }
+
+    audio {
+        width: 100% !important;
+        height: 40px !important;
+        filter: invert(100%) hue-rotate(180deg) brightness(1.2) contrast(0.85);
+        opacity: 0.9;
+        margin-top: 8px !important;
+        border-radius: 20px;
+    }
+
+    /* Login Header Styling */
     .hero-header {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-        border-radius: 16px;
-        padding: 2rem 2.5rem;
-        margin-bottom: 1.5rem;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-    }
-    .hero-header h1 {
-        color: #e0e0ff;
-        font-size: 2rem;
-        font-weight: 700;
-        margin: 0;
-    }
-    .hero-header p {
-        color: #a0b0d0;
-        margin: 0.4rem 0 0 0;
-        font-size: 0.95rem;
-    }
-
-    /* Metric tiles */
-    .metric-tile {
-        background: #1a1a2e;
-        border-radius: 10px;
-        padding: 0.6rem 1rem;
-        text-align: center;
-        font-size: 0.85rem;
-        color: #a0b0d0;
-        border: 1px solid #2a2a4a;
-    }
-    .metric-value {
-        font-size: 1.2rem;
-        font-weight: 700;
-        color: #7eb8f7;
-    }
-
-    /* Unknown badge */
-    .unknown-badge {
-        background: #c0392b;
-        color: white;
-        border-radius: 6px;
-        padding: 0.2rem 0.6rem;
-        font-size: 0.75rem;
-        font-weight: 600;
-    }
-    .known-badge {
-        background: #27ae60;
-        color: white;
-        border-radius: 6px;
-        padding: 0.2rem 0.6rem;
-        font-size: 0.75rem;
-        font-weight: 600;
-    }
-
-    /* Sidebar */
-    [data-testid="stSidebar"] {
-        background: #0d0d1a;
-    }
-
-    /* End conversation button */
-    .stButton > button {
-        background: linear-gradient(to right, #C49863, #D6AA75);
-        color: white;
-        border: none;
-        border-radius: 10px;
-        padding: 0.6rem 1.5rem;
-        font-weight: 600;
-        transition: 0.2s;
-    }
-    .stButton > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 4px 15px rgba(231,76,60,0.4);
-    }
-
-    /* Summary box */
-    .summary-box {
-        background: linear-gradient(135deg, #1a0a0a, #2d1515);
+        background: #202c33;
+        padding: 2rem;
+        border-bottom: 1px solid #2a3942;
+        margin-bottom: 2rem;
         border-radius: 12px;
-        padding: 1.2rem 1.5rem;
-        border: 1px solid #6a1a1a;
-        margin-top: 1rem;
+        text-align: center;
     }
-    .summary-box h3 { color: #ff8080; margin-top: 0; }
-    .summary-box li { color: #ffcccc; margin: 0.4rem 0; }
+    .hero-header h1 { color: #e9edef; font-size: 2rem; margin: 0; }
+    .hero-header p { color: #8696a0; margin-top: 10px; }
 
-    /* Debug box */
-    .debug-box {
-        background: #0a0a1a;
-        border-radius: 10px;
-        padding: 1rem;
-        border: 1px solid #2a2a4a;
-        font-family: 'Courier New', monospace;
-        font-size: 0.8rem;
-        color: #8899bb;
+    /* Sidebar Overrides */
+    [data-testid="stSidebar"], [data-testid="stSidebarContent"] {
+        background-color: #111b21 !important;
+        border-right: 1px solid #2a3942;
     }
+    .sidebar-sticky-header {
+        position: sticky; top: 0; background: #111b21; z-index: 100;
+        padding-bottom: 15px; border-bottom: 1px solid #2a3942;
+    }
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+        color: #00a884 !important;
+    }
+
+    .stButton > button {
+        background-color: #00a884 !important;
+        color: white !important;
+        border-radius: 24px !important;
+        border: none !important;
+    }
+
+    /* Clean Streamlit Defaults */
+    [data-testid="stHeader"], [data-testid="stFooter"], [data-testid="stChatInput"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -443,39 +531,67 @@ def split_sentences(text: str) -> list[str]:
 
 def render_sidebar():
     with st.sidebar:
-        # User Identity & Logout at the top
+        # User Identity, Logout, and End Conversation (Sticky Top)
         user_email = st.session_state.get("user_id", "Guest")
         display_name = user_email.split("@")[0].title() if "@" in user_email else user_email.title()
         
+        st.markdown(f'<div class="sidebar-sticky-header">', unsafe_allow_html=True)
         st.markdown(f"### 👋 {display_name}")
-        if st.button("Logout", use_container_width=True):
-            st.session_state.clear()
-            st.rerun()
-                
-        st.divider()
+        
+        col_buttons = st.columns(2)
+        with col_buttons[0]:
+            if st.button("Logout", use_container_width=True):
+                st.session_state.clear()
+                st.rerun()
+        with col_buttons[1]:
+            if st.session_state["conversation"] and not st.session_state["session_ended"]:
+                if st.button("⛔️ End", use_container_width=True, type="primary"):
+                    st.session_state["session_ended"] = True
+                    # Generate final summary immediately if it doesn't exist
+                    if not st.session_state.get("final_summary"):
+                        log.info("Flow: Manual end - generating summary")
+                        sarvam = _get_sarvam()
+                        full_history = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state["conversation"]])
+                        sum_prompt = f"Summarize this customer conversation into 3 bullet points: Main interest, Key details provided, and Business Outcome. History:\n{full_history}"
+                        st.session_state["final_summary"] = sarvam.chat_completion("You are a business summarizer.", sum_prompt)
+                    st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Rest of the sidebar (Scrollable)
+        
+        # Industry selection
+        if st.session_state["selected_client"]:
+            st.markdown("### 🏢 Industry")
+            industry_names = get_available_industries()
+            current_industry = st.session_state["selected_client"]["Industry"]
+            try:
+                industry_idx = industry_names.index(current_industry)
+            except ValueError:
+                industry_idx = 0
+            
+            new_industry = st.selectbox("Switch Industry:", options=industry_names, index=industry_idx)
+            if new_industry != current_industry:
+                for c in CLIENTS:
+                    if c["Industry"] == new_industry:
+                        reset_session()
+                        st.session_state["selected_client"] = c
+                        st.rerun()
+            st.divider()
+
         st.markdown("## 📊 Session Stats")
         client_name = st.session_state["selected_client"]["Client"] if st.session_state["selected_client"] else "None"
         st.markdown(f"**Client:** {client_name}")
-        if st.session_state["selected_client"]:
-            topics = st.session_state["derived_topics"].get(st.session_state["selected_client"]["index"], [])
-            if topics:
-                st.markdown("**Available Topics:**")
-                for t in topics:
-                    st.markdown(f"- {t}")
-        
         st.markdown(f"**Turns:** {st.session_state['turn_count']}")
         
-        if st.session_state["conversation"] and not st.session_state["session_ended"]:
-            if st.button("⛔️ End Conversation", use_container_width=True, type="primary"):
-                st.session_state["session_ended"] = True
-                # Generate final summary immediately if it doesn't exist
-                if not st.session_state.get("final_summary"):
-                    log.info("Flow: Manual end - generating final session summary")
-                    sarvam = _get_sarvam()
-                    full_history = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state["conversation"]])
-                    sum_prompt = f"Summarize this customer conversation into 3 bullet points: Main interest, Key details provided, and Business Outcome. History:\n{full_history}"
-                    st.session_state["final_summary"] = sarvam.chat_completion("You are a business summarizer.", sum_prompt)
-                st.rerun()
+        # Latency tracker
+        if st.session_state["latency_log"]:
+            st.divider()
+            st.markdown("## ⏱️ Latency Tracker")
+            last = st.session_state["latency_log"][-1]
+            for k, v in last.items():
+                st.markdown(f"- **{k}**: `{v:.3f}s`")
+            total = sum(last.values())
+            st.markdown(f"- **TOTAL**: `{total:.3f}s`")
         
         st.divider()
         st.markdown("## 🎙️ Minerva Settings")
@@ -484,15 +600,13 @@ def render_sidebar():
         st.session_state["debug_mode"] = st.toggle(
             "Debug Mode",
             value=st.session_state["debug_mode"],
-            help="Show similarity scores, retrieved chunks, and token counts",
         )
 
         st.markdown("### 🗣️ Language")
         st.session_state["spoken_language"] = st.selectbox(
-            "Select language you are speaking in:",
+            "Select language:",
             options=["Auto-Detect", "English", "Hindi", "Bengali", "Tamil", "Telugu", "Kannada", "Malayalam", "Marathi", "Gujarati", "Punjabi"],
-            index=0,
-            help="Locking the language can improve accuracy if auto-detect is failing."
+            index=0
         )
 
         st.markdown("### 🎭 Voice")
@@ -509,7 +623,7 @@ def render_sidebar():
 
         st.markdown("### ⚡ Speed")
         speed_names = list(SPEED_MAPPING.keys())
-        default_speed_idx = 2 # Normal
+        default_speed_idx = 2 
         current_speed = st.session_state.get("tts_speed", 1.0)
         for i, (name, val) in enumerate(SPEED_MAPPING.items()):
             if abs(val - current_speed) < 0.01:
@@ -518,26 +632,6 @@ def render_sidebar():
         
         selected_speed_name = st.selectbox("Change Speed:", options=speed_names, index=default_speed_idx)
         st.session_state["tts_speed"] = SPEED_MAPPING[selected_speed_name]
-
-        st.divider()
-
-        if st.session_state["selected_client"]:
-            st.markdown("### 🏢 Industry")
-            industry_names = get_available_industries()
-            current_industry = st.session_state["selected_client"]["Industry"]
-            try:
-                industry_idx = industry_names.index(current_industry)
-            except ValueError:
-                industry_idx = 0
-            
-            new_industry = st.selectbox("Switch Industry:", options=industry_names, index=industry_idx)
-            if new_industry != current_industry:
-                # Find the matching client config
-                for c in CLIENTS:
-                    if c["Industry"] == new_industry:
-                        reset_session()
-                        st.session_state["selected_client"] = c
-                        st.rerun()
         
         st.divider()
 
@@ -552,15 +646,8 @@ def render_sidebar():
 
         st.divider()
 
-        # Latency history
-        if st.session_state["latency_log"]:
-            st.markdown("### ⏱️ Last Latency")
-            last = st.session_state["latency_log"][-1]
-            for k, v in last.items():
-                st.markdown(f"- **{k}**: `{v:.3f}s`")
-
         st.divider()
-        st.caption("Minerva Voice AI [Demo]")
+        st.caption("Minerva Voice AI [WhatsApp Edition]")
 
 
 def render_latency_panel(latency: dict):
@@ -654,20 +741,61 @@ def main():
     check_auth()
     render_sidebar()
 
-    # Hero header
+    # WhatsApp-style Toolbar Header
     st.markdown(
-        '<div class="hero-header">'
-        '<h1>🎙️ Minerva Voice AI [Demo]</h1>'
-        '<p>Document-Grounded 24/7 Multilingual Voice AI Assistant</p>'
-        '</div>',
+        '''
+        <div class="chat-toolbar" id="minerva-header">
+            <h1>🎙️ Minerva AI</h1>
+            <p>Document-Grounded 24/7 Multilingual Voice AI Assistant</p>
+        </div>
+        <script>
+            (function() {
+                const targetSelectors = ['[data-testid="stAppViewContainer"]', '.main', 'section.main'];
+                let container = null;
+                
+                function findContainer() {
+                    for (const selector of targetSelectors) {
+                        const el = window.parent.document.querySelector(selector);
+                        if (el && el.scrollHeight > window.innerHeight) {
+                            return el;
+                        }
+                    }
+                    return window.parent.document.querySelector('[data-testid="stAppViewContainer"]');
+                }
+
+                const header = window.parent.document.getElementById('minerva-header');
+                
+                // Track scroll for shrinking header
+                let attempts = 0;
+                const interval = setInterval(() => {
+                    container = findContainer();
+                    if (container || attempts > 30) {
+                        clearInterval(interval);
+                        if (container && header) {
+                            container.addEventListener('scroll', function() {
+                                if (container.scrollTop > 40) {
+                                    header.classList.add('shrunk');
+                                } else {
+                                    header.classList.remove('shrunk');
+                                }
+                            }, { passive: true });
+                        }
+                    }
+                    attempts++;
+                }, 500);
+            })();
+        </script>
+        ''',
         unsafe_allow_html=True,
     )
+    
+    # Topics removal as requested
 
     # 1. Industry Selection (mandatory before greeting)
     if not st.session_state["selected_client"]:
-        st.subheader("Select your industry to begin")
-        cols = st.columns([1, 2, 1])
+        cols = st.columns([1, 3, 1])
         with cols[1]:
+            st.markdown('<h2 style="text-align: center; color: #e9edef; margin-top: 0; margin-bottom: 25px;">Select your industry to begin</h2>', unsafe_allow_html=True)
             with st.form("select_industry_form"):
                 industry_names = get_available_industries()
                 selected_ind = st.selectbox("Industry:", options=["Select..."] + industry_names)
@@ -730,134 +858,158 @@ def main():
     # We only show the summary if session_ended is True and we AREN'T currently processing a final message
     show_summary = session_ended and not pending_completion
 
-    # Display topics prominently if conversation just started
-    if len(st.session_state["conversation"]) <= 1 and not show_summary:
-        client = st.session_state["selected_client"]
-        topics_list = st.session_state["derived_topics"].get(client["index"], [])
-        if topics_list:
-            st.markdown(f"### 💡 Topics I can help you with:")
-            cols = st.columns(len(topics_list[:5]))
-            for i, topic in enumerate(topics_list[:5]):
-                with cols[i]:
-                    st.markdown(f'<div class="metric-tile" style="height: 100%; display: flex; align-items: center; justify-content: center; font-weight: 500;">{topic}</div>', unsafe_allow_html=True)
-            st.markdown("<br>", unsafe_allow_html=True)
+    # Topics removal as requested
 
-    # Conversation history (using chat_message for better aesthetic)
+    # Conversation history
     for i, msg in enumerate(st.session_state["conversation"]):
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+        # Get current time for the timestamp
+        now = datetime.datetime.now().strftime("%H:%M")
+        
+        if msg["role"] == "user":
+            st.markdown(f'''<div class="whatsapp-row user">
+<div class="bubble user-bubble">
+<div style="margin-bottom: 2px;">{msg["content"]}</div>
+<div class="whatsapp-time">{now}</div>
+</div>
+</div>''', unsafe_allow_html=True)
+        else:
+            # Assistant bubble logic
+            audio_html = ""
+            if "audio_data" in msg:
+                audio_key = f"audio_msg_{i}"
+                autoplay = audio_key not in st.session_state["audio_played_keys"]
+                # Convert bytes to base64 for native HTML audio tag
+                b64_audio = base64.b64encode(msg["audio_data"]).decode()
+                audio_html = f'''<audio controls autoplay playsinline style="width:100%; height:40px;">
+<source src="data:audio/wav;base64,{b64_audio}" type="audio/wav">
+</audio>'''
+                if autoplay:
+                    st.session_state["audio_played_keys"].add(audio_key)
+
+            st.markdown(f'''<div class="whatsapp-row assistant">
+<div class="bubble assistant-bubble">
+<div style="margin-bottom: 5px;">{msg["content"]}</div>
+{audio_html}
+<div class="whatsapp-time">{now}</div>
+</div>
+</div>''', unsafe_allow_html=True)
+            
             if msg.get("is_unknown"):
                 st.caption("⚠️ Grounding check: Unknown in provided context.")
-            
-            # Autoplay last assistant message audio if not played yet
-            if msg["role"] == "assistant" and "audio_data" in msg:
-                audio_key = f"audio_msg_{i}"
-                if audio_key not in st.session_state["audio_played_keys"]:
-                    st.audio(msg["audio_data"], format="audio/wav", autoplay=True)
-                    st.session_state["audio_played_keys"].add(audio_key)
-                else:
-                    # Render regular audio player without autoplay for history
-                    st.audio(msg["audio_data"], format="audio/wav")
 
     if show_summary:
         st.markdown("---")
         st.markdown("## 🏁 Session Final Results")
         render_end_session_summary()
-        if st.button("🔄 Start New Session", use_container_width=True):
-            for key in ["unknown_questions", "conversation", "latency_log", "session_ended", "has_greeted", "audio_played_keys"]:
-                if key == "session_ended" or key == "has_greeted":
-                    st.session_state[key] = False
-                elif key == "audio_played_keys":
-                    st.session_state[key] = set()
-                else:
-                    st.session_state[key] = []
-            st.rerun()
+        cols = st.columns([1, 2, 1])
+        with cols[1]:
+            if st.button("🔄 Start New Session", use_container_width=True):
+                reset_session()
+                st.rerun()
         return
 
-    # Mic input
-    st.markdown("---")
-    st.markdown("### 🎤 Talk with Minerva")
-    st.caption("Click the microphone button, ask your question, then click again to stop.")
+    # Unified WhatsApp Input Component
+    st.markdown('<div class="whatsapp-input-fixed" id="whatsapp-input-outer"><div class="whatsapp-input-wrapper">', unsafe_allow_html=True)
+    input_result = whatsapp_input(key="whatsapp_input_v1")
+    st.markdown('</div></div>', unsafe_allow_html=True)
 
-    try:
-        from audio_recorder_streamlit import audio_recorder
-        audio_bytes = audio_recorder(
-            text="Click to Record",
-            recording_color="#e74c3c",
-            neutral_color="#5b7fde",
-            icon_name="microphone",
-            icon_size="3x",
-            pause_threshold=2.0,    # auto-stop after 2s of silence
-            sample_rate=44100,
-        )
-    except ImportError:
-        st.warning("audio-recorder-streamlit is not installed. Using file uploader as fallback.")
-        uploaded = st.file_uploader("Upload WAV audio", type=["wav"])
-        audio_bytes = uploaded.read() if uploaded else None
+    chat_query = None
+    audio_bytes = None
 
-    # Process audio
-    if audio_bytes and len(audio_bytes) > 2000:
-        audio_hash = hashlib.md5(audio_bytes).hexdigest()
-        if st.session_state["last_audio_processed"] != audio_hash:
-            # Set this immediately to prevent concurrent re-entry
-            st.session_state["last_audio_processed"] = audio_hash
+    if input_result:
+        log.info(f"### INPUT DETECTED: {input_result.get('type')} | Timestamp: {input_result.get('timestamp')}")
+        if input_result["type"] == "text":
+            chat_query = input_result["content"]
+        elif input_result["type"] == "audio":
+            audio_bytes = base64.b64decode(input_result["content"])
+
+        if chat_query or (audio_bytes and len(audio_bytes) > 2000):
+            # NEW ROBUST DEDUPLICATION using timestamp from component
+            event_id = input_result.get("timestamp")
             
+            if event_id:
+                if st.session_state.get("last_event_id") == event_id:
+                    # Silence the log for same-event reruns
+                    # log.info(f"Deduplication: Stopping rerun for event {event_id}")
+                    st.stop()
+                log.info(f"--- PROCESSING NEW EVENT: {event_id} ---")
+                st.session_state["last_event_id"] = event_id
+            else:
+                log.warning("Received input_result without timestamp!")
+
             tracker = LatencyTracker()
             sarvam  = _get_sarvam()
-
-            # Step 1: STT
-            lang_map = {
-                "Auto-Detect": "unknown",
-                "English": "en-IN",
-                "Hindi": "hi-IN",
-                "Bengali": "bn-IN",
-                "Tamil": "ta-IN",
-                "Telugu": "te-IN",
-                "Kannada": "kn-IN",
-                "Malayalam": "ml-IN",
-                "Marathi": "mr-IN",
-                "Gujarati": "gu-IN",
-                "Punjabi": "pa-IN"
-            }
-            requested_lang = lang_map.get(st.session_state["spoken_language"], "unknown")
+            transcript = ""
+            det_lang = "en-IN" 
             
-            with st.status("Listening...", expanded=False) as status:
+            if chat_query:
+                transcript = chat_query
+                det_lang = "en-IN"
+                log.info(f"PROCESSING TEXT: '{transcript}'")
+                
+                # Immediate visual feedback
+                st.markdown(f'''<div class="whatsapp-row user">
+<div class="bubble user-bubble">
+<div style="margin-bottom: 2px;">{transcript}</div>
+<div class="whatsapp-time">{datetime.datetime.now().strftime("%H:%M")}</div>
+</div>
+</div>''', unsafe_allow_html=True)
+                
+                st.session_state["conversation"].append({"role": "user", "content": transcript})
+
+            elif audio_bytes:
+                # Handle Audio input (STT)
+                audio_hash = hashlib.md5(audio_bytes).hexdigest()
+                if st.session_state["last_audio_processed"] == audio_hash:
+                    st.stop()
+                st.session_state["last_audio_processed"] = audio_hash
+                
+                lang_map = {
+                    "Auto-Detect": "unknown",
+                    "English": "en-IN", "Hindi": "hi-IN", "Bengali": "bn-IN",
+                    "Tamil": "ta-IN", "Telugu": "te-IN", "Kannada": "kn-IN",
+                    "Malayalam": "ml-IN", "Marathi": "mr-IN", "Gujarati": "gu-IN",
+                    "Punjabi": "pa-IN"
+                }
+                requested_lang = lang_map.get(st.session_state["spoken_language"], "unknown")
+                
                 try:
                     with tracker.measure("STT"):
-                        transcript, det_lang = sarvam.transcribe(audio_bytes, language_code=requested_lang)
+                        transcript, det_lang = sarvam.transcribe(audio_bytes, language_code=requested_lang, extension="webm")
                 except Exception as e:
                     log.error(f"Flow: STT failed: {e}")
-                    status.update(label="Speech detection failed. Please try again.", state="error")
-                    st.session_state["last_audio_processed"] = None # Reset to allow retry
+                    st.session_state["last_audio_processed"] = None
                     st.stop()
+                
                 if not transcript:
-                    log.info("Flow: STT returned empty transcript")
-                    status.update(label="No speech detected.", state="error")
                     st.stop()
-                status.update(label="Transcribed!", state="complete")
+                log.info(f"AUDIO TRANSCRIPT: {transcript} (Language: {det_lang})")
+                
+                # Immediate visual feedback
+                st.markdown(f'''<div class="whatsapp-row user">
+<div class="bubble user-bubble">
+<div style="margin-bottom: 2px;">{transcript}</div>
+<div class="whatsapp-time">{datetime.datetime.now().strftime("%H:%M")}</div>
+</div>
+</div>''', unsafe_allow_html=True)
+                
+                st.session_state["conversation"].append({"role": "user", "content": transcript})
+                
+                # Step 1.1: Translate to English for processing if audio was in non-English
+                if str(det_lang).strip().lower() != "en-in":
+                    log.info(f"Flow: Translating from {det_lang} to English")
+                    with tracker.measure("Translate"):
+                        transcript = sarvam.translate(transcript, det_lang, "en-IN")
         
-            log.info(f"TRANSCRIPT: {transcript} (Language: {det_lang})")
-            with st.chat_message("user"):
-                st.markdown(transcript)
-            st.session_state["conversation"].append({"role": "user", "content": transcript})
-            
-            # Step 1.1: Translate to English for processing
-            if str(det_lang).strip().lower() != "en-in":
-                log.info(f"Flow: Translating from {det_lang} to English")
-                with tracker.measure("Translate"):
-                    transcript = sarvam.translate(transcript, det_lang, "en-IN")
-            else:
-                log.info("Flow: Transcript already in English")
-
+        # Proceed with reasoning for either input type
+        if transcript:
             response = ""
             is_unknown = False
 
             if st.session_state["selected_client"]:
                 client = st.session_state["selected_client"]
-                topics_list = st.session_state["derived_topics"].get(client["index"], [])
-                topics_str = ", ".join(topics_list)
                 
-                with st.status("Checking scope...", expanded=False) as status:
+                try:
                     # Scope Detection
                     with tracker.measure("Classification"):
                         curr_summary = st.session_state.get("history_summary", "")
@@ -873,14 +1025,8 @@ def main():
                     with tracker.measure("Retrieval"):
                         chunks = retrieve(transcript, client["index"], top_k=3)
                     
-                    # Evaluation Logic for the 4 Cases
-                    # Case determinants
+                    # Evaluation Logic
                     is_industry_specific = "INDUSTRY_SPECIFIC" in scope_choice.upper()
-                    
-                    # We consider info "available" if:
-                    # 1. We found some chunks with decent scores
-                    # 2. It's a conversational turn (short or refers to scheduling/next steps)
-                    # 3. We are deep in the conversation (turn 3+), trusting the session history
                     scheduling_keywords = ["visit", "call", "appointment", "friday", "monday", "tuesday", "wednesday", "thursday", "saturday", "sunday", "morning", "afternoon", "evening", "time", "date", "schedule"]
                     is_likely_continuation = len(transcript.split()) <= 8 and (
                         any(word in transcript.lower() for word in ["yes", "yeah", "ok", "sure", "elaborate", "tell", "explain", "more", "details"]) or
@@ -889,41 +1035,26 @@ def main():
                     is_goal_steering_phase = st.session_state["turn_count"] >= 3
                     
                     info_available = (chunks and chunks[0]["score"] > 0.15) or is_likely_continuation or is_goal_steering_phase
-                    
                     proceed_to_llm = False
                     
                     if not is_industry_specific and not info_available:
-                        # Case 1: Not Industry Specific & Info NOT available: Deny gently
                         response = f"I am sorry, I can only assist with inquiries related to {client['Industry']}. Can I help you with any more questions on this topic?"
-                        status.update(label="Out of Industry Scope", state="error")
-                    
                     elif not is_industry_specific and info_available:
-                        # Case 2: Not Industry Specific & Info available: Provide Grounded Results
                         proceed_to_llm = True
-                    
                     elif is_industry_specific and info_available:
-                        # Case 3: Industry Specific & Info available: Provide Grounded Results
                         proceed_to_llm = True
-                        
                     elif is_industry_specific and not info_available:
-                        # Case 4: Industry Specific & Info NOT available: Appreciate/acknoweldge and add to tracker
                         response = f"I appreciate your interest in this detail about our {client['Industry']} services. I don't have that specific information in my current knowledge base. I've logged this for a senior representative to review and provide info. Is there anything else I can help you with?"
                         st.session_state["unknown_questions"].append(transcript)
                         is_unknown = True
-                        status.update(label="Information not available. Please try again.", state="error")
 
                     if proceed_to_llm:
-                        log.info(f"Flow: Proceeding to LLM. Chunks: {len(chunks)}, Continuation: {is_likely_continuation}, GoalPhase: {is_goal_steering_phase}")
-                        status.update(label=f"Responding for {client['Industry']}...", state="complete")
+                        log.info(f"Flow: Proceeding to LLM. Chunks: {len(chunks)}")
                         with tracker.measure("LLM"):
-                            # Use turn count and summary
                             goal_text = client["Goal"]
+                            goal_steer = f"Nudge towards: {goal_text}" if st.session_state["turn_count"] >= 2 else "None"
                             if st.session_state["turn_count"] >= 5:
                                 goal_steer = f"STRONG PUSH: {goal_text}. Lead the user to complete this now."
-                            elif st.session_state["turn_count"] >= 2:
-                                goal_steer = f"Nudge towards: {goal_text}"
-                            else:
-                                goal_steer = "None"
 
                             curr_summary = st.session_state.get("history_summary", "")
                             if not curr_summary:
@@ -936,25 +1067,23 @@ def main():
                             user_msg = build_rag_prompt(chunks, transcript)
                             response = sarvam.chat_completion(sys_msg, user_msg, temperature=0.3)
                             
-                            # Check for completion signal
-                            if "[COMPLETE]" in response:
-                                response = response.replace("[COMPLETE]", "").strip()
-                                # Set PENDING completion so we process THIS turn's audio first
-                                st.session_state["pending_completion"] = True
-                                
-                                # Generate final business summary
-                                log.info("Flow: Generating final session summary")
-                                with tracker.measure("Summarize"):
-                                    full_history = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state["conversation"]])
-                                    sum_prompt = f"Summarize this customer conversation into 3 bullet points: Main interest, Key details provided, and Business Outcome (e.g. appointment booked for Friday). History:\n{full_history}"
-                                    st.session_state["final_summary"] = sarvam.chat_completion("You are a business summarizer.", sum_prompt)
-                            
-                            # Fallback if LLM decides the info is not actually in the context
-                            elif "NO_INFO_AVAILABLE".lower() in response.lower():
-                                log.info("Flow: LLM indicated info missing. Triggering Case 4 logic.")
-                                is_unknown = True
-                                response = f"I appreciate your interest in this detail about our {client['Industry']} services. I don't have that specific information in my current knowledge base. I've logged this for a senior representative to review and provide info. Is there anything else I can help you with?"
-                                st.session_state["unknown_questions"].append(transcript)
+                        # Response processing
+                        if "[COMPLETE]" in response:
+                            response = response.replace("[COMPLETE]", "").strip()
+                            st.session_state["pending_completion"] = True
+                            with tracker.measure("Summarize"):
+                                full_history = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state["conversation"]])
+                                sum_prompt = f"Summarize this customer conversation into 3 bullet points: Main interest, Key details provided, and Business Outcome. History:\n{full_history}"
+                                st.session_state["final_summary"] = sarvam.chat_completion("You are a business summarizer.", sum_prompt)
+                        
+                        elif "NO_INFO_AVAILABLE".lower() in response.lower():
+                            is_unknown = True
+                            response = f"I appreciate your interest in this detail about our {client['Industry']} services. I've logged this for review. Is there anything else?"
+                            st.session_state["unknown_questions"].append(transcript)
+
+                except Exception as e:
+                    log.error(f"Reasoning loop fatal error: {e}")
+                    response = "I encountered a technical issue. Could you please repeat that?"
             # Step 5: Output (TTS)
             if response:
                 # Use display version if we saved one
@@ -1020,21 +1149,15 @@ def main():
                 # Render latency before rerun
                 st.session_state["latency_log"].append(tracker.all())
 
-                # Force rerun to update UI (Sidebar AND Chat History with new audio)
-                log.info("Flow: Rerunning to update UI")
-                st.rerun()
+            # ALWAYS rerun if we have a transcript (even if response generation failed)
+            # This ensures the user's message is officially Part Of The History
+            log.info("Flow: Rerunning to finalize turn")
+            st.rerun()
 
     # Show latest latency log
     if st.session_state["latency_log"]:
         render_latency_panel(st.session_state["latency_log"][-1])
 
-    # End Conversation button
-    st.markdown("---")
-    col1, _ = st.columns([1, 3])
-    with col1:
-        if st.button("⛔️ End Conversation", use_container_width=True, type="primary"):
-            st.session_state["session_ended"] = True
-            st.rerun()
 
 
 if __name__ == "__main__":
