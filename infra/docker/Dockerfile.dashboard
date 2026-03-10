@@ -1,0 +1,10 @@
+# Dockerfile for the Dashboard backend service.
+#
+# Base: python:3.11-slim
+# Port: 8001
+# Entry: uvicorn dashboard.backend.main:app
+#
+# Build context should be the repository root so that both
+# dashboard/ and shared/ are available.
+#
+# Deployment: EC2 instance

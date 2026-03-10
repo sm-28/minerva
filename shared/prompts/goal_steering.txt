@@ -1,0 +1,14 @@
+# Goal Steering Prompt Templates
+#
+# Purpose:
+#     Contains the steering instructions injected into the system prompt
+#     based on conversation turn count and goal progress.
+#
+# Templates:
+#     gentle_nudge   — used at turns 3-4
+#     direct_push    — used at turns 5+
+#     completion     — used when all goal fields are collected
+#
+# Template Variables:
+#     {goal_type}        — e.g. 'book_appointment'
+#     {missing_fields}   — list of fields still needed

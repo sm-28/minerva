@@ -1,0 +1,5 @@
+# dashboard/frontend/
+# Placeholder for the dashboard frontend application.
+# Framework and structure to be determined (e.g. React, Next.js, Vue).
+# This directory will contain the admin UI for managing clients,
+# documents, configuration, analytics, and API keys.

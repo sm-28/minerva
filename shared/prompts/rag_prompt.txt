@@ -1,0 +1,16 @@
+# RAG Prompt Template
+#
+# Purpose:
+#     Formats the retrieved document chunks and user query into the
+#     user prompt sent to the LLM for grounded response generation.
+#
+# Template Variables:
+#     {context}   — formatted retrieved chunks with scores
+#     {question}  — the user's query
+#
+# Format:
+#     Context:
+#     {context}
+#
+#     Question:
+#     {question}

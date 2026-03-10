@@ -1,0 +1,14 @@
+# Scope Classifier Prompt
+#
+# Purpose:
+#     Determines if the user's query is relevant to the client's industry
+#     or is a general/unrelated question. Used to decide whether to
+#     proceed with RAG retrieval or respond with a scope denial.
+#
+# Template Variables:
+#     {industry}  — the client's industry (e.g. 'Fintech', 'Real Estate')
+#     {query}     — the user's current query
+#     {summary}   — conversation summary for context
+#
+# Output:
+#     'INDUSTRY_SPECIFIC' or 'GENERAL'

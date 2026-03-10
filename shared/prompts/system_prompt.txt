@@ -1,0 +1,14 @@
+# System Prompt — Main Conversation
+#
+# Purpose:
+#     The primary system prompt sent to the LLM for generating responses
+#     during conversations. Instructs the LLM to act as a company
+#     representative, use natural speech, and follow goal steering.
+#
+# Template Variables:
+#     {summary}  — rolling conversation summary from MemoryComponent
+#     {goal}     — goal steering instruction from GoalSteeringComponent
+#
+# Usage:
+#     Loaded by LLMComponent. Variables are substituted at runtime.
+#     Never hardcode this prompt in component code.

@@ -1,0 +1,10 @@
+# Dockerfile for the Core service (FastAPI conversation engine).
+#
+# Base: python:3.11-slim
+# Port: 8000
+# Entry: uvicorn core.main:app
+#
+# Build context should be the repository root so that both
+# core/ and shared/ are available.
+#
+# Deployment: ECS (min 2, max 5 tasks, ALB sticky sessions)
