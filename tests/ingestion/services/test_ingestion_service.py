@@ -190,11 +190,10 @@ async def test_process_job_not_found_returns_false(
     async def mock_get_connection(schema=None):
         yield mock_conn
 
-    import shared.db.connection as db_mod
-    monkeypatch.setattr(db_mod, "get_connection", mock_get_connection)
+    import ingestion.services.ingestion_service as svc
+    monkeypatch.setattr(svc, "get_connection", mock_get_connection)
 
-    from ingestion.services.ingestion_service import process_job
-    result = await process_job(str(job_id))
+    result = await svc.process_job(str(job_id))
     assert result is False
 
 
@@ -240,5 +239,11 @@ async def test_process_job_marks_in_progress_then_success(
     await process_job(str(job_id))
 
     # At least one UPDATE to ingestion_jobs must have occurred
-    update_calls = [c for c in execute_calls if "UPDATE ingestion_jobs" in c.upper()]
-    assert len(update_calls) >= 1
+    found_update = False
+    for call_args in mock_conn.execute.call_args_list:
+        args, kwargs = call_args
+        if args and "UPDATE ingestion_jobs" in args[0].upper():
+            found_update = True
+            break
+    
+    assert found_update, f"No UPDATE ingestion_jobs found in execute calls: {mock_conn.execute.call_args_list}"

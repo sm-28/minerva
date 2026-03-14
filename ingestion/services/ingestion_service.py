@@ -127,6 +127,9 @@ async def process_job(job_id: str) -> bool:
             completed_at=datetime.now(timezone.utc),
         )
 
+        # ── Step 12: Notify Core API to invalidate cache ──────────────────
+        await _notify_core_of_index_update(schema_name, client_id)
+
         logger.info(
             f"Ingestion complete: job_id={job_id}, "
             f"chunks={len(chunks)}, index={index_s3_path}"
@@ -281,6 +284,14 @@ async def _update_document(
             datetime.now(timezone.utc),
         )
     logger.debug(f"Updated document {doc_id}: chunk_count={chunk_count}")
+
+
+async def _notify_core_of_index_update(schema_name: str, client_id: uuid.UUID) -> None:
+    """Broadcasts a cache invalidation event to all active Core tasks via Postgres NOTIFY."""
+    async with get_connection(schema_name) as conn:
+        # Postgres NOTIFY requires strings for the channel payload
+        await conn.execute(f"NOTIFY index_updates, '{str(client_id)}'")
+    logger.debug(f"Broadcasted NOTIFY index_updates for client {client_id}")
 
 
 # ── S3 download helper ────────────────────────────────────────────────────────
