@@ -205,5 +205,5 @@ def _get_s3_client():
     """Return a boto3 S3 client (uses AWS credential chain)."""
     return boto3.client(
         "s3",
-        region_name=os.getenv("AWS_REGION", "ap-south-1"),
+        region_name=os.getenv("AWS_REGION", "me-central-1"),
     )

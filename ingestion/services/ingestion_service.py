@@ -321,7 +321,7 @@ async def _download_from_s3(s3_path: str, filename: str) -> str:
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext)
     os.close(tmp_fd)
 
-    s3 = boto3.client("s3", region_name=os.getenv("AWS_REGION", "ap-south-1"))
+    s3 = boto3.client("s3", region_name=os.getenv("AWS_REGION", "me-central-1"))
     try:
         s3.download_file(bucket, key, tmp_path)
     except Exception as exc:

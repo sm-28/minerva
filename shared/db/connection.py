@@ -21,6 +21,7 @@ Notes:
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 import asyncpg
@@ -73,6 +74,7 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
+@asynccontextmanager
 async def get_connection(tenant_schema: str | None = None) -> AsyncGenerator[asyncpg.Connection, None]:
     """
     Async context manager that yields a connection with the tenant schema set.
