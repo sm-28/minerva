@@ -63,10 +63,10 @@ async def process_job(job_id: str) -> bool:
     temp_file: str | None = None
 
     try:
-        # ── Step 1: Load job and document from DB ─────────────────────────
+        # ── Step 1: Load job and trigger document from DB ─────────────────
         job, document, schema_name, client_id = await _load_job_and_document(job_uuid)
         logger.info(
-            f"Loaded job: document_id={document.id}, "
+            f"Loaded job: trigger_document_id={document.id}, "
             f"filename={document.filename}, schema={schema_name}"
         )
 
@@ -110,15 +110,17 @@ async def process_job(job_id: str) -> bool:
             job_id=job_id,
         )
 
-        # ── Step 10: Update document record ───────────────────────────────
+        # ── Step 10: Update trigger document record ────────────────────────
         await _update_document(
             doc_id=document.id,
             schema_name=schema_name,
             chunk_count=len(chunks),
             embedding_model=_DEFAULT_EMBEDDING_MODEL,
-            vector_index_path=index_s3_path,
-            job_id=job_uuid,
         )
+
+        # ── Step 10b: Update job with all processed document IDs ──────────
+        all_doc_ids = list({m["document_id"] for m in all_metadata})
+        await _update_job_document_ids(job_uuid, schema_name, all_doc_ids)
 
         # ── Step 11: Mark job success ─────────────────────────────────────
         await _update_job_status(
@@ -169,13 +171,14 @@ async def _load_job_and_document(
     job_uuid: uuid.UUID,
 ) -> tuple[IngestionJob, Document, str, uuid.UUID]:
     """
-    Load the ingestion job, its associated document, and the client schema.
+    Load the ingestion job, its trigger document, and the client schema.
+
+    The trigger document is document_ids[0] — the newly uploaded document
+    that caused the Dashboard to create this ingestion job.
 
     Returns:
-        (job, document, schema_name, client_id)
+        (job, trigger_document, schema_name, client_id)
     """
-    # First find the job without a tenant schema (we'll get it from the document)
-    # In practice the ingestor receives the schema alongside the job_id from ECS env.
     schema_name = os.environ.get("TENANT_SCHEMA")
     if not schema_name:
         raise IngestionError(
@@ -192,12 +195,18 @@ async def _load_job_and_document(
 
         job = IngestionJob.from_record(dict(job_row))
 
+        trigger_doc_id = job.trigger_document_id
+        if not trigger_doc_id:
+            raise IngestionError(
+                "load_job", f"Ingestion job {job_uuid} has no document_ids."
+            )
+
         doc_row = await conn.fetchrow(
-            "SELECT * FROM documents WHERE id = $1", job.document_id
+            "SELECT * FROM documents WHERE id = $1", trigger_doc_id
         )
         if not doc_row:
             raise IngestionError(
-                "load_job", f"Document not found: {job.document_id}"
+                "load_job", f"Trigger document not found: {trigger_doc_id}"
             )
 
         document = Document.from_record(dict(doc_row))
@@ -261,29 +270,39 @@ async def _update_document(
     schema_name: str,
     chunk_count: int,
     embedding_model: str,
-    vector_index_path: str,
-    job_id: uuid.UUID,
 ) -> None:
     """Update the documents row after successful ingestion."""
     async with get_connection(schema_name) as conn:
         await conn.execute(
             """
             UPDATE documents
-               SET chunk_count       = $2,
-                   embedding_model   = $3,
-                   vector_index_path = $4,
-                   ingestion_job_id  = $5,
-                   last_updated_on   = $6
+               SET chunk_count     = $2,
+                   embedding_model = $3,
+                   last_updated_on = $4
              WHERE id = $1
             """,
             doc_id,
             chunk_count,
             embedding_model,
-            vector_index_path,
-            job_id,
             datetime.now(timezone.utc),
         )
     logger.debug(f"Updated document {doc_id}: chunk_count={chunk_count}")
+
+
+async def _update_job_document_ids(
+    job_id: uuid.UUID,
+    schema_name: str,
+    all_doc_ids: list[str],
+) -> None:
+    """Update the ingestion job with the full list of processed document IDs."""
+    doc_uuids = [uuid.UUID(d) if isinstance(d, str) else d for d in all_doc_ids]
+    async with get_connection(schema_name) as conn:
+        await conn.execute(
+            "UPDATE ingestion_jobs SET document_ids = $2 WHERE id = $1",
+            job_id,
+            doc_uuids,
+        )
+    logger.debug(f"Updated job {job_id}: document_ids={len(doc_uuids)} documents")
 
 
 async def _notify_core_of_index_update(schema_name: str, client_id: uuid.UUID) -> None:
