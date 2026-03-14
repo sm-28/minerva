@@ -1,0 +1,9 @@
+# Dockerfile for the Ingestion worker.
+#
+# Base: python:3.11-slim
+# Entry: python -m ingestion.main --job-id <job_id>
+#
+# Build context should be the repository root so that both
+# ingestion/ and shared/ are available.
+#
+# Deployment: ECS (min 0, max 2 tasks, triggered on demand)
