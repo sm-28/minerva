@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, integer, uuid, varchar, bigint } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, integer, uuid, varchar, bigint, pgEnum } from "drizzle-orm/pg-core";
 
 // ─── Auth.js tables ──────────────────────────────────────────────
 
@@ -45,6 +45,8 @@ export const verificationTokens = pgTable("verification_tokens", {
 
 // ─── App tables ──────────────────────────────────────────────────
 
+export const ingestionStatusEnum = pgEnum("ingestion_status", ["pending", "processing", "completed", "failed"]);
+
 export const businesses = pgTable("businesses", {
   id: uuid("id").defaultRandom().primaryKey(),
   name: varchar("name", { length: 100 }).unique().notNull(),
@@ -68,9 +70,9 @@ export const documents = pgTable("documents", {
   fileUrl: text("file_url").notNull(),
   size: bigint("size", { mode: "number" }).notNull(), // bytes
   mimeType: varchar("mime_type", { length: 100 }).notNull(),
-  ingestionStatus: varchar("ingestion_status", { length: 20 })
+  ingestionStatus: ingestionStatusEnum("ingestion_status")
     .default("pending")
-    .notNull(), // pending, processing, completed, failed
+    .notNull(),
   active: boolean("active").default(true).notNull(),
   createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { mode: "date" }).defaultNow().notNull(),
