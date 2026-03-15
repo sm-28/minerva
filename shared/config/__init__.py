@@ -1,0 +1,3 @@
+"""
+shared.config — Configuration management.
+"""

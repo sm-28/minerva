@@ -22,3 +22,6 @@ dist/
 .idea/
 logs/
 *.log
+
+# Temporary test scripts
+tmp/

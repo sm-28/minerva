@@ -1,0 +1,12 @@
+# Docker Compose for local development / staging.
+#
+# Services:
+#   core:       FastAPI conversation engine (port 8000)
+#   dashboard:  Admin API + frontend (port 8001)
+#   postgres:   PostgreSQL 15 (port 5432)
+#
+# Ingestion is run manually via:
+#   docker compose run ingestion --job-id <id>
+#
+# This compose file is for LOCAL DEVELOPMENT only.
+# Production uses ECS, EC2, and RDS (see infra/aws/).

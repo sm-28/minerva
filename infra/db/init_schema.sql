@@ -1,0 +1,15 @@
+-- init_schema.sql
+--
+-- Purpose:
+--     Initialises the public schema with global tables (clients, users,
+--     system_settings, client_api_keys). Run once during initial setup.
+--
+-- Usage:
+--     psql -h <host> -U <user> -d minerva -f init_schema.sql
+--
+-- Tenant schemas are created dynamically when a new client is onboarded
+-- via the dashboard. See dashboard.backend.services.client_service for
+-- tenant schema creation logic.
+--
+-- All tables include audit columns:
+--     created_by, created_on, last_updated_by, last_updated_on
