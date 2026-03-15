@@ -84,31 +84,31 @@ class TestBuildIndex:
 class TestSaveIndex:
     def test_uploads_two_files_to_s3(self, embeddings_3x4, metadata_3, mock_s3):
         index = build_index(embeddings_3x4, metadata_3)
-        client_id = str(uuid.uuid4())
+        business_id = str(uuid.uuid4())
         job_id = str(uuid.uuid4())
 
-        result = save_index(index, metadata_3, client_id, job_id)
+        result = save_index(index, metadata_3, business_id, job_id)
 
         assert mock_s3.upload_file.call_count == 2
         assert result.startswith("s3://")
 
     def test_returns_correct_s3_path(self, embeddings_3x4, metadata_3, mock_s3):
         index = build_index(embeddings_3x4, metadata_3)
-        client_id = "abc123"
+        business_id = "abc123"
         job_id = "job456"
 
-        result = save_index(index, metadata_3, client_id, job_id)
+        result = save_index(index, metadata_3, business_id, job_id)
 
-        assert f"clients/{client_id}/index" in result
+        assert f"businesses/{business_id}/index" in result
 
 
 # ── archive_previous_index ────────────────────────────────────────────────────
 
 class TestArchivePreviousIndex:
     def test_copies_both_files(self, mock_s3):
-        client_id = "client-1"
+        business_id = "business-1"
         job_id = "job-1"
-        archive_previous_index(client_id, job_id)
+        archive_previous_index(business_id, job_id)
         assert mock_s3.copy_object.call_count == 2
 
     def test_no_such_key_does_not_raise(self, mock_s3):
@@ -128,7 +128,7 @@ class TestLoadIndex:
     def test_load_raises_on_s3_failure(self, mock_s3):
         mock_s3.download_file.side_effect = Exception("S3 not found")
         with pytest.raises(IngestionError, match="Failed to download"):
-            load_index("client-1")
+            load_index("business-1")
 
     def test_load_returns_index_and_metadata(self, embeddings_3x4, metadata_3, monkeypatch):
         """
@@ -157,7 +157,7 @@ class TestLoadIndex:
         mock_client.download_file.side_effect = fake_download
         monkeypatch.setattr(boto3, "client", lambda *a, **kw: mock_client)
 
-        loaded_index, loaded_meta = load_index("client-1")
+        loaded_index, loaded_meta = load_index("business-1")
         assert loaded_index.ntotal == 3
         assert len(loaded_meta) == 3
 
@@ -166,7 +166,7 @@ class TestLoadIndex:
 
 class TestPathHelpers:
     def test_active_prefix(self):
-        assert _active_index_prefix("abc") == "clients/abc/index"
+        assert _active_index_prefix("abc") == "businesses/abc/index"
 
     def test_archive_prefix(self):
-        assert _archive_index_prefix("abc", "job1") == "clients/abc/archives/job1"
+        assert _archive_index_prefix("abc", "job1") == "businesses/abc/archives/job1"

@@ -26,7 +26,7 @@ def set_env_defaults(monkeypatch):
         "DB_PASSWORD": "test_password",
         "S3_BUCKET": "minerva-test-bucket",
         "AWS_REGION": "ap-south-1",
-        "TENANT_SCHEMA": "tenant_acme",
+        "TENANT_SCHEMA": "tenant_acme_sales",
         "INGESTION_JOB_ID": str(uuid.uuid4()),
         "EMBEDDING_MODEL": "all-MiniLM-L6-v2",
         "ENV": "test",
@@ -38,7 +38,12 @@ def set_env_defaults(monkeypatch):
 # ── Common IDs ────────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def client_id() -> uuid.UUID:
+def org_id() -> uuid.UUID:
+    return uuid.UUID("00000000-0000-0000-0000-000000000000")
+
+
+@pytest.fixture
+def business_id() -> uuid.UUID:
     return uuid.UUID("11111111-1111-1111-1111-111111111111")
 
 
@@ -60,7 +65,7 @@ def sample_text() -> str:
         "Minerva is a modular AI conversation platform. "
         "It supports PDF, DOCX, and TXT document ingestion. "
         "Documents are parsed, chunked, embedded, and stored in FAISS. "
-        "Each client has a dedicated vector index containing all active documents. "
+        "Each business has a dedicated vector index containing all active documents. "
         "The platform is deployed on AWS ECS with RDS and S3 for storage. "
         "Tenants are isolated via PostgreSQL schema-per-tenant architecture. "
         "The ingestion pipeline runs as an ECS task triggered on document upload. "

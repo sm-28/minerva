@@ -6,18 +6,18 @@ Purpose:
 
 Methods:
     build_index(embeddings, metadata) → faiss.Index
-    save_index(index, metadata, client_id, job_id)
-    archive_previous_index(client_id, job_id)
-    load_index(client_id) → (faiss.Index, list[dict])
+    save_index(index, metadata, business_id, job_id)
+    archive_previous_index(business_id, job_id)
+    load_index(business_id) → (faiss.Index, list[dict])
 
 Storage Strategy:
-    - One vector index per client containing all active document chunks.
-    - Active index stored at a well-known S3 path per client.
-    - Prior indexes archived to S3 under: s3://bucket/archives/{job_id}/
+    - One vector index per business containing all active document chunks.
+    - Active index stored at a well-known S3 path per business.
+    - Prior indexes archived to S3 under: s3://bucket/businesses/{business_id}/archives/{job_id}/
     - Chunk metadata stored alongside the index as JSON.
 
 Notes:
-    - When any document version changes, the entire client index is rebuilt
+    - When any document version changes, the entire business index is rebuilt
       from all currently active documents.
 """
 
@@ -80,26 +80,26 @@ def build_index(embeddings: np.ndarray, metadata: list[dict]) -> faiss.Index:
 def save_index(
     index: faiss.Index,
     metadata: list[dict],
-    client_id: str,
+    business_id: str,
     job_id: str,
 ) -> str:
     """
     Serialise and upload the FAISS index + metadata JSON to S3.
 
     The active index is stored at:
-        s3://<bucket>/clients/<client_id>/index/<_INDEX_FILENAME>
-        s3://<bucket>/clients/<client_id>/index/<_META_FILENAME>
+        s3://<bucket>/businesses/<business_id>/index/<_INDEX_FILENAME>
+        s3://<bucket>/businesses/<business_id>/index/<_META_FILENAME>
 
     Args:
-        index:     Populated FAISS index.
-        metadata:  Chunk metadata list (must match index order).
-        client_id: UUID string of the client.
-        job_id:    UUID string of the ingestion job (for logging).
+        index:       Populated FAISS index.
+        metadata:    Chunk metadata list (must match index order).
+        business_id: UUID string of the business.
+        job_id:      UUID string of the ingestion job (for logging).
 
     Returns:
         The S3 path prefix for the saved index.
     """
-    prefix = _active_index_prefix(client_id)
+    prefix = _active_index_prefix(business_id)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         index_path = os.path.join(tmpdir, _INDEX_FILENAME)
@@ -119,20 +119,20 @@ def save_index(
     return s3_path
 
 
-def archive_previous_index(client_id: str, job_id: str) -> None:
+def archive_previous_index(business_id: str, job_id: str) -> None:
     """
     Copy the current active index to an archive path before overwriting.
 
     Archive path:
-        s3://<bucket>/clients/<client_id>/archives/<job_id>/
+        s3://<bucket>/businesses/<business_id>/archives/<job_id>/
 
     Args:
-        client_id: UUID string of the client.
-        job_id:    UUID string of the ingestion job (used as archive folder).
+        business_id: UUID string of the business.
+        job_id:      UUID string of the ingestion job (used as archive folder).
     """
     s3 = _get_s3_client()
-    active_prefix = _active_index_prefix(client_id)
-    archive_prefix = _archive_index_prefix(client_id, job_id)
+    active_prefix = _active_index_prefix(business_id)
+    archive_prefix = _archive_index_prefix(business_id, job_id)
 
     for filename in (_INDEX_FILENAME, _META_FILENAME):
         src_key = f"{active_prefix}/{filename}"
@@ -147,16 +147,16 @@ def archive_previous_index(client_id: str, job_id: str) -> None:
         except s3.exceptions.NoSuchKey:  # type: ignore[attr-defined]
             logger.info(f"No existing index to archive at {src_key} — skipping.")
         except Exception as exc:
-            # Non-fatal: log the warning but continue ingestion
-            logger.warning(f"Could not archive {src_key}: {exc}")
+            # Fatal: if we can't archive, something is wrong with S3/config.
+            raise IngestionError(f"Failed to archive {src_key}: {exc}") from exc
 
 
-def load_index(client_id: str) -> tuple[faiss.Index, list[dict]]:
+def load_index(business_id: str) -> tuple[faiss.Index, list[dict]]:
     """
-    Download and deserialise the active FAISS index for a client.
+    Download and deserialise the active FAISS index for a business.
 
     Args:
-        client_id: UUID string of the client.
+        business_id: UUID string of the business.
 
     Returns:
         (index, metadata) tuple.
@@ -164,7 +164,7 @@ def load_index(client_id: str) -> tuple[faiss.Index, list[dict]]:
     Raises:
         IngestionError: If the index does not exist in S3.
     """
-    prefix = _active_index_prefix(client_id)
+    prefix = _active_index_prefix(business_id)
     s3 = _get_s3_client()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -177,7 +177,7 @@ def load_index(client_id: str) -> tuple[faiss.Index, list[dict]]:
         except Exception as exc:
             raise IngestionError(
                 "vector_store",
-                f"Failed to download index for client {client_id}: {exc}",
+                f"Failed to download index for business {business_id}: {exc}",
             ) from exc
 
         index = faiss.read_index(index_path)
@@ -185,7 +185,7 @@ def load_index(client_id: str) -> tuple[faiss.Index, list[dict]]:
             metadata = json.load(fh)
 
     logger.info(
-        f"Loaded FAISS index for client {client_id}: "
+        f"Loaded FAISS index for business {business_id}: "
         f"{index.ntotal} vectors, {len(metadata)} metadata entries"
     )
     return index, metadata
@@ -193,12 +193,12 @@ def load_index(client_id: str) -> tuple[faiss.Index, list[dict]]:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _active_index_prefix(client_id: str) -> str:
-    return f"clients/{client_id}/index"
+def _active_index_prefix(business_id: str) -> str:
+    return f"businesses/{business_id}/index"
 
 
-def _archive_index_prefix(client_id: str, job_id: str) -> str:
-    return f"clients/{client_id}/archives/{job_id}"
+def _archive_index_prefix(business_id: str, job_id: str) -> str:
+    return f"businesses/{business_id}/archives/{job_id}"
 
 
 def _get_s3_client():

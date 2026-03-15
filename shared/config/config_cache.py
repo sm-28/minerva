@@ -11,9 +11,9 @@ Pattern:
 
 Methods:
     ConfigCache.get_instance() → ConfigCache          (singleton accessor)
-    config.get_client_config(client_id) → dict
+    config.get_business_config(business_id) → dict
     config.get_system_setting(key) → value
-    config.invalidate(client_id)                      (force refresh for one client)
+    config.invalidate(business_id)                    (force refresh for one business)
     config.refresh_all()                              (reload everything from DB)
 
 Refresh Strategy:

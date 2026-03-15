@@ -60,22 +60,21 @@ Key endpoints:
     POST   /internal/cache/refresh              — force config reload (internal only)
 
 All endpoints (except /auth/token) require a valid JWT token.
-The JWT carries tenant context — no separate tenant header needed.
 
 ------------------------------------------------------------------------
 
 ## Authentication & Security
 
-Minerva uses a B2B token-based authentication model.
+Minerva uses a hierarchical B2B token-based authentication model.
 
-### Client Onboarding (one-time via Dashboard)
+### Organization & Business Onboarding (via Dashboard)
 
-1.  Admin creates a client record in the clients table.
-2.  System generates an api_key + api_secret pair.
-3.  Client admin configures allowed_domains and allowed_ips for their
-    integration.
-4.  Credentials are provided to the client's development team.
-5.  A client can have a maximum of 2 active api_key pairs at any time
+1.  Admin creates an Organization record (the billing entity).
+2.  Admin creates one or more Business records under the Organization.
+3.  System generates an api_key + api_secret pair scoped to a specific Business.
+4.  Organization admin configures allowed_domains and allowed_ips for each business.
+5.  Credentials (keys) are provided to the development team.
+6.  A business can have a maximum of 2 active api_key pairs at any time
     to support key rotation without downtime.
 
 ### Runtime Auth Flow
@@ -114,18 +113,20 @@ Minerva uses a B2B token-based authentication model.
          │                         │                       │
          │                         │  7. Middleware:        │
          │                         │     - Validate JWT    │
-         │                         │     - Extract client_id
+         │                         │     - Extract org_id, business_id
          │                         │     - Extract session │
          │                         │     - Route via ALB   │
          │                         │       sticky session  │
+         │                         │                       │
 
 ### JWT Token Contents
 
     {
       "sub": "customer_identifier",
-      "client_id": "uuid-of-client",
+      "org_id": "uuid-of-organization",
+      "business_id": "uuid-of-business",
       "session_id": "uuid-of-session",
-      "schema": "tenant_clientslug",
+      "schema": "tenant_business_slug",
       "exp": <30-min-from-now>,
       "iat": <issued-at>
     }
@@ -175,11 +176,11 @@ backend (admin API)
 Responsibilities:
 
 -   document uploads
--   client configuration
--   analytics
+-   business configuration
+-   analytics (aggregated by org or per business)
 -   logs
 -   ingestion triggers
--   API key management (generate, rotate, revoke)
+-   API key management (scoped to business)
 -   domain and IP whitelisting management
 
 Dashboard does not communicate directly with core.
@@ -210,9 +211,9 @@ Upload → Parse → Chunk → Embed → Store
 
 ### Vector Index Strategy
 
--   One vector index exists per client (not per document).
--   When a new document version is ingested, the client's vector
-    index is rebuilt with all active documents.
+-   One vector index exists per Business (not per Org).
+-   When a new document version is ingested, the Business's vector
+    index is rebuilt with all active documents for that business.
 -   Prior vector index versions are archived in S3 under a folder
     named with the ingestion job ID.
 -   Old document files are retained in S3 for audit purposes.
@@ -224,9 +225,9 @@ Upload → Parse → Chunk → Embed → Store
 Dashboard and core do not communicate with each other directly.
 Configuration is shared via the database:
 
-    dashboard:  writes client_configs, system_settings to DB
-    core:       reads configs from DB at startup + periodic refresh
-                (in-memory singleton, refreshed every 5 minutes)
+    dashboard:  writes business_configs, system_settings to DB
+    core:       reads configs from DB (keyed by business_id)
+                refreshed every 5 minutes
 
     dashboard → ingestion:  Direct ECS task trigger with job ID
     ingestion → DB:         Reads job details, writes status updates
@@ -234,8 +235,9 @@ Configuration is shared via the database:
 Service data ownership:
 
     core:       owns sessions, messages, usage_records
-    dashboard:  owns client_configs, system_settings, client_api_keys
+    dashboard:  owns organizations, businesses, business_configs, system_settings, business_api_keys
     ingestion:  owns documents, ingestion_jobs
+    billing:    aggregates usage across businesses under an organization
 
 ------------------------------------------------------------------------
 

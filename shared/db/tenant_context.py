@@ -30,23 +30,23 @@ import asyncpg
 _SLUG_RE = re.compile(r"^[a-z0-9_]+$")
 
 
-def get_tenant_schema(client_slug: str) -> str:
+def get_tenant_schema(business_slug: str) -> str:
     """
-    Return the PostgreSQL schema name for a given client slug.
+    Return the PostgreSQL schema name for a given business slug.
 
     Args:
-        client_slug: The client's lowercase URL-safe slug (e.g. 'acme').
+        business_slug: The business's lowercase URL-safe slug (e.g. 'acme_sales').
 
     Returns:
-        'tenant_<slug>' — e.g. 'tenant_acme'.
+        'tenant_<slug>' — e.g. 'tenant_acme_sales'.
 
     Raises:
         ValueError: If the slug contains characters that could cause SQL injection.
     """
-    slug = client_slug.lower().strip()
+    slug = business_slug.lower().strip()
     if not _SLUG_RE.match(slug):
         raise ValueError(
-            f"Invalid client slug '{slug}'. Only lowercase letters, digits, "
+            f"Invalid business slug '{slug}'. Only lowercase letters, digits, "
             "and underscores are allowed."
         )
     return f"tenant_{slug}"

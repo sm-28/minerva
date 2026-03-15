@@ -64,7 +64,7 @@ async def process_job(job_id: str) -> bool:
 
     try:
         # ── Step 1: Load job and trigger document from DB ─────────────────
-        job, document, schema_name, client_id = await _load_job_and_document(job_uuid)
+        job, document, schema_name, business_id = await _load_job_and_document(job_uuid)
         logger.info(
             f"Loaded job: trigger_document_id={document.id}, "
             f"filename={document.filename}, schema={schema_name}"
@@ -90,9 +90,9 @@ async def process_job(job_id: str) -> bool:
         # ── Step 6: Embed current document's chunks ───────────────────────
         current_embeddings = embedder.embed(chunk_texts, model_name=_DEFAULT_EMBEDDING_MODEL)
 
-        # ── Step 7: Load + embed all OTHER active documents for this client ─
+        # ── Step 7: Load + embed all OTHER active documents for this business ─
         all_embeddings, all_metadata = await _build_combined_embeddings(
-            client_id=str(client_id),
+            business_id=str(business_id),
             schema_name=schema_name,
             current_doc=document,
             current_chunks=chunks,
@@ -100,13 +100,13 @@ async def process_job(job_id: str) -> bool:
         )
 
         # ── Step 8: Archive previous index ────────────────────────────────
-        vector_store.archive_previous_index(client_id=str(client_id), job_id=job_id)
+        vector_store.archive_previous_index(business_id=str(business_id), job_id=job_id)
 
         # ── Step 9: Build and save new FAISS index ────────────────────────
         faiss_index = vector_store.build_index(all_embeddings, all_metadata)
         index_s3_path = vector_store.save_index(
             faiss_index, all_metadata,
-            client_id=str(client_id),
+            business_id=str(business_id),
             job_id=job_id,
         )
 
@@ -130,7 +130,7 @@ async def process_job(job_id: str) -> bool:
         )
 
         # ── Step 12: Notify Core API to invalidate cache ──────────────────
-        await _notify_core_of_index_update(schema_name, client_id)
+        await _notify_core_of_index_update(schema_name, business_id)
 
         logger.info(
             f"Ingestion complete: job_id={job_id}, "
@@ -171,13 +171,13 @@ async def _load_job_and_document(
     job_uuid: uuid.UUID,
 ) -> tuple[IngestionJob, Document, str, uuid.UUID]:
     """
-    Load the ingestion job, its trigger document, and the client schema.
+    Load the ingestion job, its trigger document, and the business schema.
 
     The trigger document is document_ids[0] — the newly uploaded document
     that caused the Dashboard to create this ingestion job.
 
     Returns:
-        (job, trigger_document, schema_name, client_id)
+        (job, trigger_document, schema_name, business_id)
     """
     schema_name = os.environ.get("TENANT_SCHEMA")
     if not schema_name:
@@ -211,18 +211,18 @@ async def _load_job_and_document(
 
         document = Document.from_record(dict(doc_row))
 
-        # Fetch the client_id from the public.clients table via schema_name
-        client_row = await conn.fetchrow(
-            "SELECT id FROM public.clients WHERE schema_name = $1", schema_name
+        # Fetch the business_id from the public.businesses table via schema_name
+        business_row = await conn.fetchrow(
+            "SELECT id FROM public.businesses WHERE schema_name = $1", schema_name
         )
-        if not client_row:
+        if not business_row:
             raise IngestionError(
                 "load_job",
-                f"Could not find client for schema '{schema_name}'",
+                f"Could not find business for schema '{schema_name}'",
             )
-        client_id: uuid.UUID = client_row["id"]
+        business_id: uuid.UUID = business_row["id"]
 
-    return job, document, schema_name, client_id
+    return job, document, schema_name, business_id
 
 
 async def _update_job_status(
@@ -305,12 +305,12 @@ async def _update_job_document_ids(
     logger.debug(f"Updated job {job_id}: document_ids={len(doc_uuids)} documents")
 
 
-async def _notify_core_of_index_update(schema_name: str, client_id: uuid.UUID) -> None:
+async def _notify_core_of_index_update(schema_name: str, business_id: uuid.UUID) -> None:
     """Broadcasts a cache invalidation event to all active Core tasks via Postgres NOTIFY."""
     async with get_connection(schema_name) as conn:
         # Postgres NOTIFY requires strings for the channel payload
-        await conn.execute(f"NOTIFY index_updates, '{str(client_id)}'")
-    logger.debug(f"Broadcasted NOTIFY index_updates for client {client_id}")
+        await conn.execute(f"NOTIFY index_updates, '{str(business_id)}'")
+    logger.debug(f"Broadcasted NOTIFY index_updates for business {business_id}")
 
 
 # ── S3 download helper ────────────────────────────────────────────────────────
@@ -353,14 +353,14 @@ async def _download_from_s3(s3_path: str, filename: str) -> str:
 # ── Multi-document index builder ──────────────────────────────────────────────
 
 async def _build_combined_embeddings(
-    client_id: str,
+    business_id: str,
     schema_name: str,
     current_doc: Document,
     current_chunks: list[dict],
     current_embeddings: np.ndarray,
 ) -> tuple[np.ndarray, list[dict]]:
     """
-    Collect embeddings and metadata for all active documents of the client,
+    Collect embeddings and metadata for all active documents of the business,
     combining the freshly-embedded current document with re-embedded others.
 
     Returns:
@@ -376,7 +376,7 @@ async def _build_combined_embeddings(
         for c in current_chunks
     ]
 
-    # Fetch all other active documents for this client
+    # Fetch all other active documents for this business
     async with get_connection(schema_name) as conn:
         rows = await conn.fetch(
             """
@@ -419,14 +419,14 @@ async def _build_combined_embeddings(
                 if os.path.exists(tmp_file):
                     os.remove(tmp_file)
         except Exception as exc:
-            # Non-critical: log and skip this document so others still get indexed
-            logger.warning(
-                f"Skipping document {other_doc.id} due to error: {exc}"
-            )
+            # Fatal: if we can't build a complete index, the job should fail.
+            raise IngestionError(
+                f"Failed to re-embed component document {other_doc.id}: {exc}"
+            ) from exc
 
     combined = np.vstack(all_embeddings).astype(np.float32)
     logger.info(
         f"Combined index: {combined.shape[0]} total chunks "
-        f"from {1 + len(rows)} documents"
+        f"from {len(all_embeddings)} documents"
     )
     return combined, all_metadata

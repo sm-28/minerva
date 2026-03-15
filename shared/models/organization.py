@@ -1,30 +1,33 @@
 """
-shared/models/user.py — Dashboard user model.
+shared/models/organization.py — Organization (top-level billing entity) model.
 
-Table: public.users
+Table: public.organizations
 
 Fields:
-    id, email, name, org_id (FK → organizations.id),
-    role ('org_admin' | 'business_admin' | 'viewer'), is_active
+    id, name, is_active
+
+Notes:
+    - This is a global table that exists in the public schema.
+    - An Organization is the parent billing/contractual entity (formerly 'clients').
+    - Each Organization can own multiple Businesses.
+    - Billing is aggregated across all Businesses within an Organization.
+    - API keys are scoped to individual Businesses (not Organizations).
 """
 
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
 
 @dataclass
-class User:
-    """Represents a row in public.users."""
+class Organization:
+    """Represents a row in public.organizations."""
 
     id: uuid.UUID
-    email: str
-    name: Optional[str]
-    org_id: uuid.UUID
-    role: str = "viewer"  # org_admin | business_admin | viewer
+    name: str
     is_active: bool = True
 
     # Audit columns
@@ -34,13 +37,10 @@ class User:
     last_updated_on: Optional[datetime] = None
 
     @classmethod
-    def from_record(cls, record: dict) -> "User":
+    def from_record(cls, record: dict) -> "Organization":
         return cls(
             id=record["id"],
-            email=record["email"],
-            name=record.get("name"),
-            org_id=record["org_id"],
-            role=record.get("role", "viewer"),
+            name=record["name"],
             is_active=record.get("is_active", True),
             created_by=record.get("created_by"),
             created_on=record.get("created_on"),

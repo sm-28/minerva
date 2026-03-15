@@ -2,10 +2,10 @@
 
 ## Multi‑Tenant Design
 
-Minerva uses schema‑per‑tenant architecture.
+Minerva uses a hierarchical multi‑tenant architecture.
 
-Global schema: public\
-Tenant schemas: tenant\_\<client_slug\>
+Global schema: public (contains Organizations, Businesses, Users)
+Tenant schemas: tenant\_\<business_slug\> (contains knowledge base and session data)
 
 ------------------------------------------------------------------------
 
@@ -23,16 +23,29 @@ but must be present on every table.
 
 ------------------------------------------------------------------------
 
-## Global Tables
+## Global Tables (Public Schema)
 
 ------------------------------------------------------------------------
 
-### clients
+### organizations
+
+The parent billing and contractual entity.
 
     id                UUID PK
     name              TEXT NOT NULL
+    is_active         BOOLEAN DEFAULT true
+
+------------------------------------------------------------------------
+
+### businesses
+
+An autonomous tenant (or agent) owned by an organization. Each business has its own knowledge base and schema.
+
+    id                UUID PK
+    org_id            UUID FK → organizations.id
+    name              TEXT NOT NULL
     slug              TEXT UNIQUE NOT NULL
-    schema_name       TEXT UNIQUE NOT NULL
+    schema_name       TEXT UNIQUE NOT NULL (tenant_<slug>)
     industry          TEXT
     allowed_domains   JSONB DEFAULT '[]'
     allowed_ips       JSONB DEFAULT '[]'
@@ -40,17 +53,17 @@ but must be present on every table.
 
 ------------------------------------------------------------------------
 
-### client_api_keys
+### business_api_keys
 
-    id                UUID PK
-    client_id         UUID FK → clients.id
-    api_key           TEXT UNIQUE NOT NULL
-    api_secret_hash   TEXT NOT NULL
-    is_active         BOOLEAN DEFAULT true
+API keys are scoped to a specific business.
 
-A client can have a maximum of 2 active api_key pairs at any time.
-This supports key rotation without downtime — the client generates
-a new pair, migrates their backend, then deactivates the old pair.
+    id                    UUID PK
+    business_id           UUID FK → businesses.id
+    api_key               TEXT UNIQUE NOT NULL
+    api_secret_hash       TEXT NOT NULL
+    is_active             BOOLEAN DEFAULT true
+
+A business can have a maximum of 2 active api_key pairs at any time.
 
 ------------------------------------------------------------------------
 
@@ -59,9 +72,18 @@ a new pair, migrates their backend, then deactivates the old pair.
     id                UUID PK
     email             TEXT UNIQUE NOT NULL
     name              TEXT
-    role              TEXT DEFAULT 'viewer'
-    client_id         UUID FK → clients.id
+    role              TEXT DEFAULT 'viewer' (org_admin | business_admin | viewer)
+    org_id            UUID FK → organizations.id
     is_active         BOOLEAN DEFAULT true
+
+------------------------------------------------------------------------
+
+### user_business_access
+
+Join table for business_admin/viewer access to specific businesses.
+
+    user_id           UUID FK → users.id
+    business_id       UUID FK → businesses.id
 
 ------------------------------------------------------------------------
 
@@ -75,11 +97,11 @@ a new pair, migrates their backend, then deactivates the old pair.
 
 ## Tenant Tables
 
-All tenant tables exist within the tenant\_\<slug\> schema.
+All tenant tables exist within the tenant\_\<business_slug\> schema.
 
 ------------------------------------------------------------------------
 
-### client_configs
+### business_configs (formerly client_configs)
 
     id                UUID PK
     config_key        TEXT NOT NULL
@@ -101,7 +123,7 @@ Common config_keys:
 ### sessions
 
     id                    UUID PK
-    client_id             UUID FK → clients.id
+    business_id           UUID FK → businesses.id (denormalized for convenience)
     channel               TEXT (web | whatsapp | phone)
     user_identifier       TEXT
     language              TEXT
@@ -131,12 +153,12 @@ Common config_keys:
     id                UUID PK
     filename          TEXT NOT NULL
     file_type         TEXT DEFAULT 'pdf'
-    s3_path           TEXT NOT NULL
+    s3_path           TEXT NOT NULL (s3://bucket/businesses/{id}/docs/)
     version           INT NOT NULL DEFAULT 1
     is_active         BOOLEAN DEFAULT true
     chunk_count       INT
     embedding_model   TEXT
-    vector_index_path TEXT
+    vector_index_path TEXT (deterministic: s3://bucket/businesses/{id}/index/)
     ingestion_job_id  UUID FK → ingestion_jobs.id
     uploaded_by       UUID FK → users.id
 
@@ -145,18 +167,14 @@ is_active = true. When a new version is uploaded:
 
 1.  The previous active version is set to is_active = false.
 2.  A new record is created with version = previous_version + 1.
-3.  The old document file is retained in S3 for audit purposes.
-4.  The prior vector index is archived in S3 under a folder named
-    with the ingestion_job_id.
-5.  Only one vector index exists per client at any time, containing
-    all active document versions.
+3.  The prior vector index for the Business is rebuilt and archived.
 
 ------------------------------------------------------------------------
 
 ### ingestion_jobs
 
     id                UUID PK
-    document_id       UUID FK → documents.id
+    document_ids      UUID[] FK → documents.id
     status            TEXT DEFAULT 'initiated'
                       (initiated | in_progress | success | failed)
     error_message     TEXT
@@ -203,8 +221,7 @@ is_active = true. When a new version is uploaded:
 
 ### Global → Tenant
 
-clients.schema_name maps to the tenant schema name (tenant\_\<slug\>).
-All tenant tables exist within that schema.
+businesses.schema_name maps to the tenant schema name (tenant\_\<slug\>).
 
 ### Within a Tenant Schema
 
@@ -212,19 +229,13 @@ All tenant tables exist within that schema.
     sessions         → usage_records     (one-to-many)
     sessions         → unknown_queries   (one-to-many)
     sessions         → feedback          (one-to-many)
-    documents        → ingestion_jobs    (one-to-many, one doc can be re-ingested)
-    messages         → usage_records     (one-to-one)
-    messages         → unknown_queries   (optional one-to-one)
-    messages         → feedback          (optional one-to-one)
+    documents        → ingestion_jobs    (one-to-many)
 
 ------------------------------------------------------------------------
 
 ## Key Indexes
 
-    sessions:         (client_id, created_on), (user_identifier), (status)
+    sessions:         (business_id, created_on), (user_identifier)
     messages:         (session_id, created_on)
-    documents:        (is_active), (filename, version)
-    ingestion_jobs:   (document_id), (status)
-    unknown_queries:  (session_id), (resolved)
-    usage_records:    (session_id)
-    client_api_keys:  (client_id), (api_key)
+    businesses:       (org_id), (slug)
+    business_api_keys: (business_id), (api_key)

@@ -37,19 +37,19 @@ class TestGetTenantSchema:
         assert get_tenant_schema("  acme  ") == "tenant_acme"
 
     def test_empty_slug_raises(self):
-        with pytest.raises(ValueError, match="Invalid client slug"):
+        with pytest.raises(ValueError, match="Invalid business slug"):
             get_tenant_schema("")
 
     def test_slug_with_hyphen_raises(self):
-        with pytest.raises(ValueError, match="Invalid client slug"):
+        with pytest.raises(ValueError, match="Invalid business slug"):
             get_tenant_schema("my-company")
 
     def test_slug_with_dot_raises(self):
-        with pytest.raises(ValueError, match="Invalid client slug"):
+        with pytest.raises(ValueError, match="Invalid business slug"):
             get_tenant_schema("my.company")
 
     def test_slug_with_sql_injection_raises(self):
-        with pytest.raises(ValueError, match="Invalid client slug"):
+        with pytest.raises(ValueError, match="Invalid business slug"):
             get_tenant_schema("acme; DROP TABLE documents;--")
 
 

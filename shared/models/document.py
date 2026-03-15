@@ -10,8 +10,11 @@ Fields:
 Notes:
     - Only one version per document should have is_active=true at any time.
     - Old versions and their S3 files are retained for audit.
-    - One vector index exists per client (built from all active documents).
-    - The vector index path is deterministic: s3://{bucket}/clients/{client_id}/index/
+    - One FAISS vector index exists per Business (built from all active documents).
+    - Document S3 paths are scoped per Business:
+        s3://{bucket}/businesses/{business_id}/docs/{filename}
+    - The vector index path is deterministic:
+        s3://{bucket}/businesses/{business_id}/index/
 """
 
 from __future__ import annotations

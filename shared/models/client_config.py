@@ -1,12 +1,9 @@
 """
-shared/models/client_config.py — Per-tenant configuration model.
+shared/models/client_config.py — DEPRECATED.
 
-Table: tenant_<slug>.client_configs
+This model has been superseded by:
+    shared/models/business_config.py
 
-Fields:
-    id, config_key, config_value (JSONB), description
-
-Common Keys:
-    pipeline_components, default_language, goal_definition,
-    provider_overrides, greeting_template, unknown_response_template, voice_config
+Configurations are now scoped per Business (tenant).
+See: shared/models/business_config.py
 """

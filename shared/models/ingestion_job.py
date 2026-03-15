@@ -1,7 +1,7 @@
 """
 shared/models/ingestion_job.py — Ingestion job model.
 
-Table: tenant_<slug>.ingestion_jobs
+Table: tenant_<business_slug>.ingestion_jobs
 
 Fields:
     id, document_ids (UUID[] — all active documents processed in this job),
@@ -11,7 +11,8 @@ Fields:
 Notes:
     - document_ids is initialised with the trigger document UUID by the Dashboard.
     - The ingestion pipeline updates document_ids to include ALL active documents
-      that were re-embedded as part of the full index rebuild.
+      that were re-embedded as part of the full index rebuild for this Business.
+    - The FAISS index rebuilt by this job is scoped to the Business (not the Org).
 """
 
 from __future__ import annotations
